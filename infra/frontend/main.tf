@@ -80,33 +80,7 @@ output "static_web_app_url" {
 }
 
 output "deployment_token" {
-  description = "Deployment token for GitHub Actions (keep secret!)"
+  description = "Deployment token for SWA CLI"
   value       = azurerm_static_web_app.main.api_key
   sensitive   = true
-}
-
-output "setup_instructions" {
-  description = "Next steps for deployment"
-  value       = <<-EOT
-    
-    ========================================
-    FRONTEND DEPLOYMENT SETUP
-    ========================================
-    
-    1. Get the deployment token:
-       terraform output -raw deployment_token
-    
-    2. Add to GitHub repository secrets:
-       - Name: AZURE_STATIC_WEB_APPS_API_TOKEN
-       - Value: [the deployment token]
-    
-    3. Add backend API URL as build-time env var in GitHub Actions:
-       env:
-         VITE_API_URL: ${var.backend_api_url != "" ? var.backend_api_url : "<your-backend-url>"}
-    
-    4. Your frontend will be available at:
-       https://${azurerm_static_web_app.main.default_host_name}
-    
-    ========================================
-  EOT
 }

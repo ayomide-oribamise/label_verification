@@ -57,9 +57,3 @@ variable "max_replicas" {
   type        = number
   default     = 3
 }
-
-variable "allowed_origins" {
-  description = "CORS allowed origins (use * for development)"
-  type        = list(string)
-  default     = ["*"]
-}
