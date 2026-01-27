@@ -68,12 +68,12 @@ This API provides automated verification of alcohol label images against applica
         redoc_url="/redoc",
     )
     
-    # Configure CORS
+    # Configure CORS - restrict to allowed frontend origins
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Configure appropriately for production
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
-        allow_methods=["*"],
+        allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
     

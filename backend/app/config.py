@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     app_name: str = "Label Verification API"
     debug: bool = False
     
+    # CORS - Allowed frontend origins
+    cors_origins: list[str] = [
+        "https://kind-meadow-060b0b60f-preview.eastus2.1.azurestaticapps.net",
+        "http://localhost:5173",  # Local development
+    ]
+    
     # Image processing limits
     max_image_size_mb: int = 3
     max_image_width: int = 1500
