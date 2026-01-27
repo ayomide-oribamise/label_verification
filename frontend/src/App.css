@@ -358,6 +358,59 @@ body {
   font-size: 0.9375rem;
 }
 
+/* ===== Sample Application Selector ===== */
+.sample-selector {
+  margin-bottom: 1.5rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sample-label {
+  font-size: 0.875rem;
+  color: var(--color-text-light);
+  margin-bottom: 0.5rem;
+}
+
+.sample-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.btn-sample {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  background: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-sample:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.btn-sample.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-white);
+}
+
+.btn-sample:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sample-hint {
+  font-size: 0.75rem;
+  color: var(--color-text-light);
+  font-style: italic;
+}
+
 /* ===== Action Buttons ===== */
 .action-buttons {
   display: flex;

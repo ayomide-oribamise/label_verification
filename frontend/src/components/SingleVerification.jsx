@@ -7,6 +7,43 @@ import LoadingSpinner from './LoadingSpinner'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
+// Sample application data for quick testing
+const SAMPLE_APPLICATIONS = [
+  {
+    id: 'old-tom',
+    name: 'OLD TOM DISTILLERY',
+    data: {
+      brand_name: 'OLD TOM DISTILLERY',
+      class_type: 'Kentucky Straight Bourbon Whiskey',
+      abv_percent: '45',
+      net_contents_ml: '750',
+      has_warning: true,
+    }
+  },
+  {
+    id: 'silver-oak',
+    name: 'SILVER OAK VINEYARDS',
+    data: {
+      brand_name: 'SILVER OAK',
+      class_type: 'Cabernet Sauvignon',
+      abv_percent: '14.5',
+      net_contents_ml: '750',
+      has_warning: true,
+    }
+  },
+  {
+    id: 'mountain-brew',
+    name: 'MOUNTAIN BREW CO',
+    data: {
+      brand_name: 'MOUNTAIN BREW',
+      class_type: 'India Pale Ale',
+      abv_percent: '6.5',
+      net_contents_ml: '355',
+      has_warning: true,
+    }
+  },
+]
+
 function SingleVerification() {
   const [image, setImage] = useState(null)
   const [imagePreview, setImagePreview] = useState(null)
@@ -17,6 +54,7 @@ function SingleVerification() {
     net_contents_ml: '',
     has_warning: true,
   })
+  const [selectedSample, setSelectedSample] = useState(null)
   const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -54,6 +92,13 @@ function SingleVerification() {
 
   const handleFormChange = (field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }))
+    setSelectedSample(null) // Clear sample selection when manually editing
+  }
+
+  const loadSampleApplication = (sample) => {
+    setFormData(sample.data)
+    setSelectedSample(sample.id)
+    setError(null)
   }
 
   const handleVerify = async () => {
@@ -125,6 +170,7 @@ function SingleVerification() {
       net_contents_ml: '',
       has_warning: true,
     })
+    setSelectedSample(null)
     setResults(null)
     setError(null)
   }
@@ -165,6 +211,26 @@ function SingleVerification() {
         {/* Right side: Form */}
         <div className="form-section">
           <h2>2. Enter Application Data</h2>
+          
+          {/* Sample Application Selector */}
+          <div className="sample-selector">
+            <p className="sample-label">Quick load sample application:</p>
+            <div className="sample-buttons">
+              {SAMPLE_APPLICATIONS.map(sample => (
+                <button
+                  key={sample.id}
+                  className={`btn btn-sample ${selectedSample === sample.id ? 'active' : ''}`}
+                  onClick={() => loadSampleApplication(sample)}
+                  disabled={loading}
+                  title={`Load ${sample.name} application data`}
+                >
+                  {sample.name}
+                </button>
+              ))}
+            </div>
+            <p className="sample-hint">Or enter your own application data below:</p>
+          </div>
+
           <ApplicationForm
             formData={formData}
             onChange={handleFormChange}
