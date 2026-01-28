@@ -217,13 +217,20 @@ async def extract_only(
         # Preprocess image
         processed_image, preprocessing_meta = preprocessor.preprocess(image_bytes)
         
-        # Run OCR
-        ocr_result = ocr_service.process(processed_image)
+        # Run OCR - catch OCR-specific errors
+        try:
+            ocr_result = ocr_service.process(processed_image)
+        except Exception as e:
+            logger.exception(f"OCR processing failed: {e}")
+            raise HTTPException(
+                status_code=422,
+                detail="Unable to extract text from image. Please upload a clearer label."
+            )
         
         if not ocr_result.boxes:
-            return VerificationResponse(
-                success=False,
-                error="Unable to extract text from image. Please upload a clearer label."
+            raise HTTPException(
+                status_code=422,
+                detail="Unable to extract text from image. Please upload a clearer label."
             )
         
         # Extract fields from OCR result
@@ -247,11 +254,14 @@ async def extract_only(
             error=None
         )
         
+    except HTTPException:
+        # Re-raise HTTP exceptions (already have proper status codes)
+        raise
     except Exception as e:
         logger.exception(f"Error processing image: {e}")
-        return VerificationResponse(
-            success=False,
-            error=f"Error processing image: {str(e)}"
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing image: {str(e)}"
         )
 
 
@@ -290,10 +300,10 @@ async def verify_batch(
     settings = get_settings()
     
     # Check batch size limit
-    if len(images) > settings.batch_max_files:
+    if len(images) > settings.max_batch_size:
         raise HTTPException(
             status_code=400,
-            detail=f"Too many files. Maximum batch size is {settings.batch_max_files} files."
+            detail=f"Too many files. Maximum batch size is {settings.max_batch_size} files."
         )
     
     # Check OCR readiness

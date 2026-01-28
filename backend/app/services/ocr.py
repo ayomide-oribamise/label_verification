@@ -1,4 +1,4 @@
-"""OCR service using PaddleOCR 3.x."""
+"""OCR service using PaddleOCR 2.7.0.3 (stable classic API, avoids PaddleX pipeline)."""
 
 import numpy as np
 from typing import Optional, List
@@ -8,8 +8,13 @@ import os
 
 from ..config import get_settings
 
-# Suppress PaddleOCR model source check warning
-os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
+# Disable OneDNN and PIR to avoid compatibility issues with Azure Container Apps
+os.environ["FLAGS_use_mkldnn"] = "0"
+os.environ["FLAGS_use_gpu"] = "0"
+os.environ["FLAGS_enable_pir_api"] = "0"
+os.environ["FLAGS_pir_apply_inplace_pass"] = "0"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +81,7 @@ class OCRResult:
 
 
 class OCRService:
-    """PaddleOCR 3.x wrapper service."""
+    """PaddleOCR 2.7.0.3 wrapper service (stable classic API, avoids PaddleX pipeline)."""
     
     _instance: Optional["OCRService"] = None
     _ocr = None
@@ -104,18 +109,18 @@ class OCRService:
         try:
             from paddleocr import PaddleOCR
             
-            logger.info("Initializing PaddleOCR engine...")
+            logger.info("Initializing PaddleOCR 2.7.0.3 engine (classic API)...")
             
-            # PaddleOCR 3.x API
+            # PaddleOCR 2.7.0.3 uses classic API (not PaddleX pipeline) - stable and well-tested
             self._ocr = PaddleOCR(
+                use_angle_cls=True,  # Enable angle classification
                 lang=self.settings.ocr_lang,
-                use_doc_orientation_classify=False,  # Disable for speed
-                use_doc_unwarping=False,  # Disable for speed
-                use_textline_orientation=True,  # Enable text line orientation
+                use_gpu=False,  # CPU-only for container compatibility
+                show_log=False,  # Reduce logging noise
             )
             
             self._initialized = True
-            logger.info("PaddleOCR initialized successfully")
+            logger.info("PaddleOCR 2.7.0.3 initialized successfully")
             return True
             
         except Exception as e:
@@ -142,45 +147,36 @@ class OCRService:
             return OCRResult.empty()
         
         try:
-            # Run PaddleOCR 3.x - uses predict() method
-            results = self._ocr.predict(image)
+            # Run PaddleOCR 2.7.0.3 - classic API uses ocr() method with cls=True
+            results = self._ocr.ocr(image, cls=True)
             
             if not results or len(results) == 0:
                 logger.warning("OCR returned no results")
                 return OCRResult.empty()
             
-            # PaddleOCR 3.x returns a list of result dicts
-            result = results[0]
+            # PaddleOCR 2.7.0.3 classic API returns: [[[bbox], (text, confidence)], ...]
+            # The first level is for each image (we only process one)
+            detections = results[0]
             
-            # Extract detection polygons and recognition results
-            dt_polys = result.get('dt_polys', [])
-            rec_texts = result.get('rec_texts', [])
-            rec_scores = result.get('rec_scores', [])
-            rec_polys = result.get('rec_polys', [])
-            
-            # Use rec_polys if available (more accurate), otherwise dt_polys
-            polys = rec_polys if len(rec_polys) > 0 else dt_polys
-            
-            if len(rec_texts) == 0:
+            if not detections:
                 logger.warning("OCR found no text")
                 return OCRResult.empty()
             
             # Parse results into OCRBox objects
             boxes = []
-            for i, text in enumerate(rec_texts):
+            for detection in detections:
+                # Each detection is [bbox_points, (text, confidence)]
+                bbox_points = detection[0]  # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+                text_info = detection[1]    # (text, confidence)
+                
+                text = text_info[0]
+                confidence = text_info[1]
+                
                 if not text.strip():
                     continue
-                    
-                # Get confidence score
-                confidence = rec_scores[i] if i < len(rec_scores) else 0.0
                 
-                # Get bounding box
-                if i < len(polys) and len(polys[i]) >= 4:
-                    poly = polys[i]
-                    bbox_int = [[int(p[0]), int(p[1])] for p in poly[:4]]
-                else:
-                    # Create dummy bbox if not available
-                    bbox_int = [[0, 0], [100, 0], [100, 20], [0, 20]]
+                # Convert bbox points to int
+                bbox_int = [[int(p[0]), int(p[1])] for p in bbox_points]
                 
                 boxes.append(OCRBox(
                     text=text,

@@ -4,13 +4,13 @@ uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 
 # Image processing
-opencv-python-headless>=4.9.0.80
+opencv-python-headless==4.10.0.84
 Pillow>=10.2.0
-numpy>=1.26.0
+numpy<2
 
-# OCR
-paddlepaddle>=2.6.0
-paddleocr>=2.7.0
+# OCR - pinned to stable 2.x stack (avoids PaddleX pipeline)
+paddlepaddle==2.6.2
+paddleocr==2.7.0.3
 
 # Validation and utilities
 pydantic>=2.5.0
@@ -19,6 +19,10 @@ python-dotenv>=1.0.0
 
 # Fuzzy matching (for brand name comparison)
 rapidfuzz>=3.6.0
+
+# Pin PyMuPDF below 1.23 to avoid source build on Debian 11
+# Version 1.22.x has manylinux_2_17 wheels compatible with python:3.11-slim
+PyMuPDF<1.23.0
 
 # Testing
 pytest>=8.0.0
