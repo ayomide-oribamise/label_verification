@@ -2,6 +2,7 @@ import { useState } from 'react'
 import './App.css'
 import SingleVerification from './components/SingleVerification'
 import BatchVerification from './components/BatchVerification'
+import logo from './assets/logo.png'
 
 function App() {
   const [mode, setMode] = useState('single') // 'single' or 'batch'
@@ -9,8 +10,9 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>🍷 Label Verification Tool</h1>
-        <p className="subtitle">AI-powered alcohol label compliance checker</p>
+        <div className="header-brand">
+          <img src={logo} alt="LabelCheck" className="header-logo" />
+        </div>
       </header>
 
       <nav className="mode-tabs" role="tablist">

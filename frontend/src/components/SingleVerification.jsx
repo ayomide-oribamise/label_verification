@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useDropzone } from 'react-dropzone'
 import axios from 'axios'
 import ApplicationForm from './ApplicationForm'
@@ -7,11 +7,12 @@ import LoadingSpinner from './LoadingSpinner'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-// Sample application data for quick testing
-const SAMPLE_APPLICATIONS = [
+// Default sample application data for quick testing
+const DEFAULT_SAMPLES = [
   {
     id: 'old-tom',
     name: 'OLD TOM DISTILLERY',
+    isDefault: true,
     data: {
       brand_name: 'OLD TOM DISTILLERY',
       class_type: 'Kentucky Straight Bourbon Whiskey',
@@ -23,6 +24,7 @@ const SAMPLE_APPLICATIONS = [
   {
     id: 'silver-oak',
     name: 'SILVER OAK VINEYARDS',
+    isDefault: true,
     data: {
       brand_name: 'SILVER OAK',
       class_type: 'Cabernet Sauvignon',
@@ -34,6 +36,7 @@ const SAMPLE_APPLICATIONS = [
   {
     id: 'mountain-brew',
     name: 'MOUNTAIN BREW CO',
+    isDefault: true,
     data: {
       brand_name: 'MOUNTAIN BREW',
       class_type: 'India Pale Ale',
@@ -43,6 +46,8 @@ const SAMPLE_APPLICATIONS = [
     }
   },
 ]
+
+const STORAGE_KEY = 'labelcheck_saved_applications'
 
 function SingleVerification() {
   const [image, setImage] = useState(null)
@@ -55,9 +60,27 @@ function SingleVerification() {
     has_warning: true,
   })
   const [selectedSample, setSelectedSample] = useState(null)
+  const [savedApplications, setSavedApplications] = useState([])
   const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [showSaveModal, setShowSaveModal] = useState(false)
+  const [saveName, setSaveName] = useState('')
+
+  // Load saved applications from localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY)
+      if (saved) {
+        setSavedApplications(JSON.parse(saved))
+      }
+    } catch (e) {
+      console.error('Failed to load saved applications:', e)
+    }
+  }, [])
+
+  // Combine default and saved applications
+  const allApplications = [...DEFAULT_SAMPLES, ...savedApplications]
 
   const onDrop = useCallback((acceptedFiles, rejectedFiles) => {
     if (rejectedFiles.length > 0) {
@@ -67,7 +90,6 @@ function SingleVerification() {
     
     const file = acceptedFiles[0]
     if (file) {
-      // Check file size (max 5MB)
       if (file.size > 5 * 1024 * 1024) {
         setError('Image too large. Maximum size is 5MB. Please resize or compress the image.')
         return
@@ -92,13 +114,60 @@ function SingleVerification() {
 
   const handleFormChange = (field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }))
-    setSelectedSample(null) // Clear sample selection when manually editing
+    setSelectedSample(null)
   }
 
   const loadSampleApplication = (sample) => {
     setFormData(sample.data)
     setSelectedSample(sample.id)
     setError(null)
+  }
+
+  const saveCurrentApplication = () => {
+    if (!saveName.trim()) {
+      setError('Please enter a name for this application.')
+      return
+    }
+
+    if (!formData.brand_name.trim()) {
+      setError('Please fill in at least the brand name before saving.')
+      return
+    }
+
+    const newApp = {
+      id: `custom-${Date.now()}`,
+      name: saveName.trim().toUpperCase(),
+      isDefault: false,
+      data: { ...formData }
+    }
+
+    const updated = [...savedApplications, newApp]
+    setSavedApplications(updated)
+    
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated))
+    } catch (e) {
+      console.error('Failed to save application:', e)
+    }
+
+    setShowSaveModal(false)
+    setSaveName('')
+    setSelectedSample(newApp.id)
+  }
+
+  const deleteCustomApplication = (appId) => {
+    const updated = savedApplications.filter(app => app.id !== appId)
+    setSavedApplications(updated)
+    
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated))
+    } catch (e) {
+      console.error('Failed to delete application:', e)
+    }
+
+    if (selectedSample === appId) {
+      setSelectedSample(null)
+    }
   }
 
   const handleVerify = async () => {
@@ -136,7 +205,7 @@ function SingleVerification() {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
-        timeout: 30000, // 30 second timeout
+        timeout: 30000,
       })
 
       if (response.data.success) {
@@ -174,6 +243,8 @@ function SingleVerification() {
     setResults(null)
     setError(null)
   }
+
+  const hasFormData = formData.brand_name.trim() !== ''
 
   return (
     <div className="single-verification">
@@ -214,20 +285,68 @@ function SingleVerification() {
           
           {/* Sample Application Selector */}
           <div className="sample-selector">
-            <p className="sample-label">Quick load sample application:</p>
-            <div className="sample-buttons">
-              {SAMPLE_APPLICATIONS.map(sample => (
-                <button
-                  key={sample.id}
-                  className={`btn btn-sample ${selectedSample === sample.id ? 'active' : ''}`}
-                  onClick={() => loadSampleApplication(sample)}
+            <div className="sample-header">
+              <p className="sample-label">Load saved application:</p>
+              {hasFormData && !selectedSample && (
+                <button 
+                  className="btn btn-save-app"
+                  onClick={() => setShowSaveModal(true)}
                   disabled={loading}
-                  title={`Load ${sample.name} application data`}
                 >
-                  {sample.name}
+                  💾 Save Current
                 </button>
-              ))}
+              )}
             </div>
+            
+            {/* Default samples */}
+            <div className="sample-group">
+              <span className="sample-group-label">Samples:</span>
+              <div className="sample-buttons">
+                {DEFAULT_SAMPLES.map(sample => (
+                  <button
+                    key={sample.id}
+                    className={`btn btn-sample ${selectedSample === sample.id ? 'active' : ''}`}
+                    onClick={() => loadSampleApplication(sample)}
+                    disabled={loading}
+                    title={`Load ${sample.name} application data`}
+                  >
+                    {sample.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Custom saved applications */}
+            {savedApplications.length > 0 && (
+              <div className="sample-group">
+                <span className="sample-group-label">Your saved:</span>
+                <div className="sample-buttons">
+                  {savedApplications.map(sample => (
+                    <div key={sample.id} className="custom-app-wrapper">
+                      <button
+                        className={`btn btn-sample btn-custom ${selectedSample === sample.id ? 'active' : ''}`}
+                        onClick={() => loadSampleApplication(sample)}
+                        disabled={loading}
+                        title={`Load ${sample.name} application data`}
+                      >
+                        {sample.name}
+                      </button>
+                      <button
+                        className="btn-delete-app"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          deleteCustomApplication(sample.id)
+                        }}
+                        title="Delete this saved application"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <p className="sample-hint">Or enter your own application data below:</p>
           </div>
 
@@ -238,6 +357,41 @@ function SingleVerification() {
           />
         </div>
       </div>
+
+      {/* Save Modal */}
+      {showSaveModal && (
+        <div className="modal-overlay" onClick={() => setShowSaveModal(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <h3>Save Application</h3>
+            <p>Save this application data for future use.</p>
+            <input
+              type="text"
+              placeholder="Enter a name (e.g., MY BRAND)"
+              value={saveName}
+              onChange={e => setSaveName(e.target.value)}
+              className="save-name-input"
+              autoFocus
+            />
+            <div className="modal-buttons">
+              <button 
+                className="btn btn-primary"
+                onClick={saveCurrentApplication}
+              >
+                Save
+              </button>
+              <button 
+                className="btn btn-secondary"
+                onClick={() => {
+                  setShowSaveModal(false)
+                  setSaveName('')
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Error display */}
       {error && (

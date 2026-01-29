@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { useDropzone } from 'react-dropzone'
 import axios from 'axios'
 import LoadingSpinner from './LoadingSpinner'
@@ -6,13 +6,41 @@ import BatchResults from './BatchResults'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
+// Sample batch data for quick testing
+const SAMPLE_BATCH_DATA = {
+  'sample_whiskey.png': {
+    brand_name: 'OLD TOM DISTILLERY',
+    class_type: 'Kentucky Straight Bourbon Whiskey',
+    abv_percent: '45',
+    net_contents_ml: '750',
+    has_warning: true,
+  },
+  'sample_wine.png': {
+    brand_name: 'SILVER OAK',
+    class_type: 'Cabernet Sauvignon',
+    abv_percent: '14.5',
+    net_contents_ml: '750',
+    has_warning: true,
+  },
+  'sample_beer.png': {
+    brand_name: 'MOUNTAIN BREW',
+    class_type: 'India Pale Ale',
+    abv_percent: '6.5',
+    net_contents_ml: '355',
+    has_warning: true,
+  },
+}
+
 function BatchVerification() {
   const [images, setImages] = useState([])
   const [csvFile, setCsvFile] = useState(null)
+  const [csvData, setCsvData] = useState(null) // Parsed CSV data
+  const [imageData, setImageData] = useState({}) // Editable data per image
   const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [progress, setProgress] = useState(0)
+  const [mode, setMode] = useState('upload') // 'upload', 'edit', 'review'
 
   // Image dropzone
   const onDropImages = useCallback((acceptedFiles, rejectedFiles) => {
@@ -20,7 +48,6 @@ function BatchVerification() {
       setError('Some files were rejected. Only PNG, JPG, JPEG, WEBP images are allowed.')
     }
     
-    // Filter and validate files
     const validFiles = acceptedFiles.filter(file => {
       if (file.size > 5 * 1024 * 1024) {
         setError(`${file.name} is too large (max 5MB). It will be skipped.`)
@@ -31,6 +58,21 @@ function BatchVerification() {
 
     setImages(prev => [...prev, ...validFiles])
     setResults(null)
+    setCsvData(null)
+    
+    // Initialize empty data for new images
+    validFiles.forEach(file => {
+      setImageData(prev => ({
+        ...prev,
+        [file.name]: prev[file.name] || {
+          brand_name: '',
+          class_type: '',
+          abv_percent: '',
+          net_contents_ml: '',
+          has_warning: true,
+        }
+      }))
+    })
   }, [])
 
   const { getRootProps: getImageRootProps, getInputProps: getImageInputProps, isDragActive: isImageDragActive } = useDropzone({
@@ -42,15 +84,43 @@ function BatchVerification() {
     },
   })
 
-  // CSV dropzone
+  // CSV dropzone and parsing
   const onDropCSV = useCallback((acceptedFiles) => {
     const file = acceptedFiles[0]
     if (file) {
       setCsvFile(file)
       setError(null)
       setResults(null)
+      
+      // Parse CSV
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        try {
+          const text = e.target.result
+          const parsed = parseCSV(text)
+          setCsvData(parsed)
+          
+          // Update imageData with CSV values
+          const newImageData = { ...imageData }
+          parsed.forEach(row => {
+            if (row.filename) {
+              newImageData[row.filename] = {
+                brand_name: row.brand_name || '',
+                class_type: row.class_type || '',
+                abv_percent: row.abv_percent || '',
+                net_contents_ml: row.net_contents_ml || '',
+                has_warning: row.has_warning !== 'false' && row.has_warning !== false,
+              }
+            }
+          })
+          setImageData(newImageData)
+        } catch (err) {
+          setError('Failed to parse CSV file. Please check the format.')
+        }
+      }
+      reader.readAsText(file)
     }
-  }, [])
+  }, [imageData])
 
   const { getRootProps: getCsvRootProps, getInputProps: getCsvInputProps, isDragActive: isCsvDragActive } = useDropzone({
     onDrop: onDropCSV,
@@ -60,8 +130,53 @@ function BatchVerification() {
     maxFiles: 1,
   })
 
+  // Parse CSV string to array of objects
+  const parseCSV = (text) => {
+    const lines = text.trim().split('\n')
+    if (lines.length < 2) return []
+    
+    const headers = lines[0].split(',').map(h => h.trim().toLowerCase())
+    
+    return lines.slice(1).map(line => {
+      const values = line.split(',').map(v => v.trim())
+      const row = {}
+      headers.forEach((header, i) => {
+        row[header] = values[i] || ''
+      })
+      return row
+    })
+  }
+
+  // Calculate matching status
+  const matchStatus = useMemo(() => {
+    const imageNames = new Set(images.map(img => img.name))
+    const csvNames = csvData ? new Set(csvData.map(row => row.filename)) : new Set()
+    
+    return {
+      matched: images.filter(img => csvNames.has(img.name) || imageData[img.name]?.brand_name),
+      unmatchedImages: images.filter(img => !csvNames.has(img.name) && !imageData[img.name]?.brand_name),
+      unmatchedCsv: csvData ? csvData.filter(row => !imageNames.has(row.filename)) : [],
+    }
+  }, [images, csvData, imageData])
+
   const removeImage = (index) => {
+    const img = images[index]
     setImages(prev => prev.filter((_, i) => i !== index))
+    setImageData(prev => {
+      const newData = { ...prev }
+      delete newData[img.name]
+      return newData
+    })
+  }
+
+  const updateImageData = (filename, field, value) => {
+    setImageData(prev => ({
+      ...prev,
+      [filename]: {
+        ...prev[filename],
+        [field]: value,
+      }
+    }))
   }
 
   const handleVerifyBatch = async () => {
@@ -70,8 +185,10 @@ function BatchVerification() {
       return
     }
 
-    if (!csvFile) {
-      setError('Please upload a CSV file with application data.')
+    // Check if all images have at least brand_name
+    const missingData = images.filter(img => !imageData[img.name]?.brand_name)
+    if (missingData.length > 0) {
+      setError(`Missing brand name for: ${missingData.map(img => img.name).join(', ')}`)
       return
     }
 
@@ -80,22 +197,25 @@ function BatchVerification() {
     setResults(null)
     setProgress(0)
 
+    // Generate CSV from imageData
+    const csvContent = generateCSV()
+    const csvBlob = new Blob([csvContent], { type: 'text/csv' })
+    const generatedCsvFile = new File([csvBlob], 'batch_data.csv', { type: 'text/csv' })
+
     const submitData = new FormData()
     
-    // Add all images
     images.forEach(img => {
       submitData.append('images', img)
     })
     
-    // Add CSV file
-    submitData.append('csv_file', csvFile)
+    submitData.append('csv_file', generatedCsvFile)
 
     try {
       const response = await axios.post(`${API_URL}/api/v1/verify/batch`, submitData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
-        timeout: 300000, // 5 minute timeout for batch
+        timeout: 300000,
         onUploadProgress: (progressEvent) => {
           const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
           setProgress(percentCompleted)
@@ -104,6 +224,7 @@ function BatchVerification() {
 
       if (response.data.success) {
         setResults(response.data)
+        setMode('upload')
       } else {
         setError(response.data.error || 'Batch verification failed.')
       }
@@ -122,17 +243,37 @@ function BatchVerification() {
     }
   }
 
-  const handleClear = () => {
-    setImages([])
-    setCsvFile(null)
-    setResults(null)
-    setError(null)
+  const generateCSV = () => {
+    const headers = ['filename', 'brand_name', 'class_type', 'abv_percent', 'net_contents_ml', 'has_warning']
+    const rows = images.map(img => {
+      const data = imageData[img.name] || {}
+      return [
+        img.name,
+        data.brand_name || '',
+        data.class_type || '',
+        data.abv_percent || '',
+        data.net_contents_ml || '',
+        data.has_warning !== false ? 'true' : 'false',
+      ].join(',')
+    })
+    return [headers.join(','), ...rows].join('\n')
   }
 
-  const downloadTemplate = () => {
+  const downloadSmartTemplate = () => {
+    const csvContent = generateCSV()
+    const blob = new Blob([csvContent], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'batch_template.csv'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const downloadGenericTemplate = () => {
     const csvContent = `filename,brand_name,class_type,abv_percent,net_contents_ml,has_warning
-label_01.png,OLD TOM DISTILLERY,Kentucky Straight Bourbon Whiskey,45,750,true
-label_02.png,JACK DANIELS,Tennessee Whiskey,40,1000,true`
+label_01.png,BRAND NAME,Beverage Type,45,750,true
+label_02.png,ANOTHER BRAND,Another Type,40,1000,true`
     
     const blob = new Blob([csvContent], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
@@ -143,83 +284,195 @@ label_02.png,JACK DANIELS,Tennessee Whiskey,40,1000,true`
     URL.revokeObjectURL(url)
   }
 
+  const loadSampleData = (filename) => {
+    if (SAMPLE_BATCH_DATA[filename]) {
+      setImageData(prev => ({
+        ...prev,
+        [filename]: { ...SAMPLE_BATCH_DATA[filename] }
+      }))
+    }
+  }
+
+  const handleClear = () => {
+    setImages([])
+    setCsvFile(null)
+    setCsvData(null)
+    setImageData({})
+    setResults(null)
+    setError(null)
+    setMode('upload')
+  }
+
+  const allImagesHaveData = images.every(img => imageData[img.name]?.brand_name)
+
   return (
     <div className="batch-verification">
       <div className="batch-info">
         <h2>Batch Verification</h2>
-        <p>Upload multiple label images and a CSV file with the expected application data.</p>
-        <button className="btn btn-link" onClick={downloadTemplate}>
-          📥 Download CSV Template
-        </button>
+        <p>Upload multiple label images and provide application data for each.</p>
       </div>
 
-      <div className="batch-layout">
-        {/* Images upload */}
+      {/* Step 1: Upload Images */}
+      <div className="batch-section">
+        <h3>Step 1: Upload Label Images</h3>
+        <div
+          {...getImageRootProps()}
+          className={`dropzone batch-dropzone ${isImageDragActive ? 'active' : ''}`}
+        >
+          <input {...getImageInputProps()} />
+          <div className="dropzone-content">
+            <div className="dropzone-icon">📷</div>
+            <p>Drag & drop label images here</p>
+            <p className="dropzone-subtext">or click to select files</p>
+            <p className="dropzone-formats">PNG, JPG, JPEG, WEBP (max 5MB each)</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Step 2: Provide Data - shows after images uploaded */}
+      {images.length > 0 && (
         <div className="batch-section">
-          <h3>1. Upload Label Images</h3>
-          <div
-            {...getImageRootProps()}
-            className={`dropzone batch-dropzone ${isImageDragActive ? 'active' : ''}`}
-          >
-            <input {...getImageInputProps()} />
-            <div className="dropzone-content">
-              <div className="dropzone-icon">📷</div>
-              <p>Drag & drop label images here</p>
-              <p className="dropzone-subtext">or click to select files</p>
+          <h3>Step 2: Provide Application Data</h3>
+          <p className="section-hint">
+            Choose how to provide data for your {images.length} image(s):
+          </p>
+          
+          <div className="data-options">
+            <div className="data-option">
+              <h4>Option A: Upload CSV</h4>
+              <p>Upload a CSV file with application data matching your image filenames.</p>
+              <div
+                {...getCsvRootProps()}
+                className={`dropzone mini-dropzone ${isCsvDragActive ? 'active' : ''} ${csvFile ? 'has-file' : ''}`}
+              >
+                <input {...getCsvInputProps()} />
+                {csvFile ? (
+                  <span className="csv-selected">✓ {csvFile.name}</span>
+                ) : (
+                  <span>Drop CSV here or click to select</span>
+                )}
+              </div>
+              <button className="btn btn-link" onClick={downloadGenericTemplate}>
+                📥 Download blank template
+              </button>
+              {images.length > 0 && (
+                <button className="btn btn-link" onClick={downloadSmartTemplate}>
+                  📥 Download template with your filenames
+                </button>
+              )}
+            </div>
+            
+            <div className="data-option-divider">OR</div>
+            
+            <div className="data-option">
+              <h4>Option B: Enter Data Below</h4>
+              <p>Fill in the application data directly for each image.</p>
             </div>
           </div>
 
-          {images.length > 0 && (
-            <div className="image-list">
-              <h4>{images.length} image(s) selected:</h4>
-              <ul>
+          {/* Image-by-image data entry */}
+          <div className="image-data-table">
+            <table className="data-entry-table">
+              <thead>
+                <tr>
+                  <th>Image</th>
+                  <th>Brand Name <span className="required">*</span></th>
+                  <th>Class/Type</th>
+                  <th>ABV %</th>
+                  <th>mL</th>
+                  <th>Warning</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
                 {images.map((img, index) => (
-                  <li key={index}>
-                    <span className="image-name">{img.name}</span>
-                    <span className="image-size">({(img.size / 1024).toFixed(1)} KB)</span>
-                    <button
-                      className="btn-remove"
-                      onClick={() => removeImage(index)}
-                      aria-label={`Remove ${img.name}`}
-                    >
-                      ×
-                    </button>
-                  </li>
+                  <tr key={img.name} className={imageData[img.name]?.brand_name ? 'has-data' : 'missing-data'}>
+                    <td className="image-cell">
+                      <span className="image-filename" title={img.name}>
+                        {img.name.length > 20 ? img.name.slice(0, 17) + '...' : img.name}
+                      </span>
+                      {SAMPLE_BATCH_DATA[img.name] && (
+                        <button 
+                          className="btn-mini btn-sample-load"
+                          onClick={() => loadSampleData(img.name)}
+                          title="Load sample data"
+                        >
+                          Load sample
+                        </button>
+                      )}
+                    </td>
+                    <td>
+                      <input
+                        type="text"
+                        value={imageData[img.name]?.brand_name || ''}
+                        onChange={(e) => updateImageData(img.name, 'brand_name', e.target.value)}
+                        placeholder="Required"
+                        className="table-input"
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="text"
+                        value={imageData[img.name]?.class_type || ''}
+                        onChange={(e) => updateImageData(img.name, 'class_type', e.target.value)}
+                        placeholder="e.g., Bourbon"
+                        className="table-input"
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="number"
+                        value={imageData[img.name]?.abv_percent || ''}
+                        onChange={(e) => updateImageData(img.name, 'abv_percent', e.target.value)}
+                        placeholder="e.g., 45"
+                        className="table-input table-input-small"
+                        step="0.1"
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="number"
+                        value={imageData[img.name]?.net_contents_ml || ''}
+                        onChange={(e) => updateImageData(img.name, 'net_contents_ml', e.target.value)}
+                        placeholder="e.g., 750"
+                        className="table-input table-input-small"
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={imageData[img.name]?.has_warning !== false}
+                        onChange={(e) => updateImageData(img.name, 'has_warning', e.target.checked)}
+                        className="table-checkbox"
+                      />
+                    </td>
+                    <td>
+                      <button
+                        className="btn-remove"
+                        onClick={() => removeImage(index)}
+                        aria-label={`Remove ${img.name}`}
+                      >
+                        ×
+                      </button>
+                    </td>
+                  </tr>
                 ))}
-              </ul>
-            </div>
-          )}
-        </div>
+              </tbody>
+            </table>
+          </div>
 
-        {/* CSV upload */}
-        <div className="batch-section">
-          <h3>2. Upload CSV Data</h3>
-          <div
-            {...getCsvRootProps()}
-            className={`dropzone batch-dropzone ${isCsvDragActive ? 'active' : ''} ${csvFile ? 'has-file' : ''}`}
-          >
-            <input {...getCsvInputProps()} />
-            {csvFile ? (
-              <div className="csv-preview">
-                <span className="csv-icon">📄</span>
-                <span className="csv-name">{csvFile.name}</span>
-                <p className="change-hint">Click or drag to change</p>
-              </div>
+          {/* Status indicator */}
+          <div className="data-status">
+            {allImagesHaveData ? (
+              <span className="status-ready">✓ All images have required data</span>
             ) : (
-              <div className="dropzone-content">
-                <div className="dropzone-icon">📄</div>
-                <p>Drag & drop CSV file here</p>
-                <p className="dropzone-subtext">or click to select</p>
-              </div>
+              <span className="status-incomplete">
+                ⚠️ {images.filter(img => !imageData[img.name]?.brand_name).length} image(s) missing brand name
+              </span>
             )}
           </div>
-
-          <div className="csv-format">
-            <h4>Required CSV columns:</h4>
-            <code>filename, brand_name, class_type, abv_percent, net_contents_ml, has_warning</code>
-          </div>
         </div>
-      </div>
+      )}
 
       {/* Error display */}
       {error && (
@@ -245,7 +498,7 @@ label_02.png,JACK DANIELS,Tennessee Whiskey,40,1000,true`
         <button
           className="btn btn-primary btn-large"
           onClick={handleVerifyBatch}
-          disabled={loading || images.length === 0 || !csvFile}
+          disabled={loading || images.length === 0 || !allImagesHaveData}
         >
           {loading ? <LoadingSpinner /> : `✓ Verify ${images.length} Label(s)`}
         </button>
