@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager - handles startup and shutdown."""
+    import numpy as np
+    
     # Startup
     logger.info("Starting Label Verification API...")
     settings = get_settings()
@@ -29,6 +31,18 @@ async def lifespan(app: FastAPI):
     ocr_service = OCRService()
     if ocr_service.initialize():
         logger.info("OCR engine initialized and ready")
+        
+        # Warmup: run a tiny inference to fully initialize PyTorch
+        # This avoids first-request latency
+        logger.info("Running OCR warmup inference...")
+        try:
+            # Create a small test image (100x50 white with black text area)
+            warmup_img = np.ones((50, 100, 3), dtype=np.uint8) * 255
+            warmup_img[15:35, 10:90] = 0  # Black rectangle
+            ocr_service.process(warmup_img)
+            logger.info("OCR warmup complete - first request will be fast")
+        except Exception as e:
+            logger.warning(f"OCR warmup failed (non-critical): {e}")
     else:
         logger.warning("OCR engine failed to initialize - will retry on first request")
     
@@ -68,11 +82,11 @@ This API provides automated verification of alcohol label images against applica
         redoc_url="/redoc",
     )
     
-    # Configure CORS - restrict to allowed frontend origins
+    # Configure CORS - allow all origins for prototype
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
+        allow_origins=["*"],
+        allow_credentials=False,  # Must be False when using "*" origins
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )

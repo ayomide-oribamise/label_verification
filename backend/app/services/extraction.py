@@ -1,4 +1,10 @@
-"""Field extraction service using OCR results."""
+"""Field extraction service using OCR results.
+
+Enhanced brand extraction using:
+1. Regex patterns to find brand phrases ending in DISTILLERY/BREWING/WINERY
+2. Token-set similarity for order-insensitive matching
+3. Fallback to spatial analysis if regex fails
+"""
 
 import re
 from typing import Optional, List, Tuple
@@ -19,6 +25,9 @@ GOVERNMENT_WARNING_CANONICAL = (
     "OPERATE MACHINERY, AND MAY CAUSE HEALTH PROBLEMS."
 )
 
+# Brand suffix keywords - brands often end with these
+BRAND_SUFFIX_PATTERN = r"(DISTILLERY|DISTILLING|BREWING|BREWERY|WINERY|VINEYARDS?|COMPANY|CO\.?|INC\.?|LLC|CELLARS?|SPIRITS?)"
+
 # Beverage type keywords for class/type detection
 BEVERAGE_KEYWORDS = {
     "whiskey", "whisky", "bourbon", "scotch", "rye",
@@ -37,6 +46,9 @@ MARKETING_KEYWORDS = {
     "handcrafted", "artisan", "craft", "estate", "vintage",
     "original", "classic", "traditional", "authentic",
 }
+
+# Stop words to ignore in token matching
+BRAND_STOP_WORDS = {"THE", "AND", "OF", "BY"}
 
 
 @dataclass
@@ -79,7 +91,8 @@ class FieldExtractor:
             r'(\d+(?:\.\d+)?)\s*%',
         ]
         
-        # Net contents patterns
+        # Net contents patterns (order matters - more specific first)
+        # Handle OCR artifacts like colons, periods, extra spaces
         self.net_contents_patterns = [
             # Milliliters: "750 mL", "750ml", "750 ML"
             (r'(\d+(?:\.\d+)?)\s*(?:ml|mL|ML)', 1.0),
@@ -87,8 +100,9 @@ class FieldExtractor:
             (r'(\d+(?:\.\d+)?)\s*(?:cl|cL|CL)', 10.0),
             # Liters: "1 L", "1L", "1 LITER", "1 liter"
             (r'(\d+(?:\.\d+)?)\s*(?:l|L|liter|LITER|litre|LITRE)(?!\w)', 1000.0),
-            # Fluid ounces (US): "25.4 FL OZ", "25.4 fl oz"
-            (r'(\d+(?:\.\d+)?)\s*(?:fl\.?\s*oz\.?|FL\.?\s*OZ\.?)', 29.5735),
+            # Fluid ounces (US): "25.4 FL OZ", "25.4 fl oz", "12 FL: Oz." (OCR artifacts)
+            # More lenient pattern to handle OCR noise (colons, periods, spaces)
+            (r'(\d+(?:\.\d+)?)\s*(?:fl|FL)[\s.:;]*(?:oz|OZ|Oz)\.?', 29.5735),
         ]
     
     def extract_all(self, ocr_result: OCRResult) -> ExtractionResult:
@@ -132,81 +146,331 @@ class FieldExtractor:
     
     def _extract_brand(self, ocr_result: OCRResult) -> ExtractedField:
         """
-        Extract brand name using spatial rules.
+        Extract brand name using multiple strategies.
         
-        Strategy:
-        1. Find top-most text blocks with largest height (dominant headline)
-        2. Filter out marketing fluff
-        3. Return the most prominent candidate
+        Strategy (in order):
+        1. Regex search for brand ending with DISTILLERY/BREWING/WINERY etc.
+        2. Extract from top portion of text (before beverage keywords)
+        3. Spatial analysis of top region boxes
+        4. Smart fallback (filter stop/fluff words)
+        
+        Always populates source_boxes for downstream use (e.g., class/type positioning).
         """
-        if not ocr_result.boxes:
+        if not ocr_result.raw_text:
             return ExtractedField(
                 value=None,
                 confidence=0.0,
-                extraction_method="spatial",
+                extraction_method="none",
                 notes="No text detected"
             )
         
-        # Sort boxes by Y position (top first), then by height (largest first)
-        sorted_boxes = sorted(
-            ocr_result.boxes,
-            key=lambda b: (b.top, -b.height)
-        )
+        raw_text = ocr_result.raw_text
+        boxes = ocr_result.boxes or []
         
-        # Get top third of the image (where brand usually is)
-        min_y = min(b.top for b in ocr_result.boxes)
-        max_y = max(b.bottom for b in ocr_result.boxes)
-        top_third_threshold = min_y + (max_y - min_y) // 3
-        
-        # Find candidates in top third with large height
-        candidates = []
-        for box in sorted_boxes:
-            if box.top > top_third_threshold:
-                break
-            
-            text_lower = box.text.lower()
-            
-            # Skip if it's just marketing fluff
-            is_fluff = any(kw in text_lower for kw in MARKETING_KEYWORDS)
-            
-            # Skip if it contains beverage keywords (likely class/type)
-            has_beverage_keyword = any(kw in text_lower for kw in BEVERAGE_KEYWORDS)
-            
-            # Skip very short text (likely not brand)
-            if len(box.text.strip()) < 3:
-                continue
-            
-            # Skip ABV/net contents patterns
-            if re.search(r'\d+\s*%|\d+\s*(?:ml|cl|oz|proof)', text_lower):
-                continue
-                
-            if not is_fluff and not has_beverage_keyword:
-                candidates.append(box)
-        
-        if not candidates:
-            # Fallback: take largest text in top half
-            top_half_threshold = min_y + (max_y - min_y) // 2
-            top_boxes = [b for b in sorted_boxes if b.top < top_half_threshold]
-            if top_boxes:
-                candidates = sorted(top_boxes, key=lambda b: b.height, reverse=True)[:1]
-        
-        if candidates:
-            # Take the one with largest height (most prominent)
-            best = max(candidates, key=lambda b: b.height)
+        # Strategy 1: Find brand phrase ending with producer keyword (DISTILLERY, BREWING, etc.)
+        brand = self._extract_brand_with_suffix(raw_text)
+        if brand:
+            src_boxes = self._boxes_for_phrase(boxes, brand)
             return ExtractedField(
-                value=best.text.strip(),
-                confidence=best.confidence,
-                source_boxes=[best],
-                extraction_method="spatial_top_prominent",
-                notes="Top-most prominent text"
+                value=brand,
+                confidence=0.9,
+                source_boxes=src_boxes,
+                extraction_method="regex_suffix",
+                notes="Found brand ending with producer keyword"
             )
         
+        # Strategy 2: Extract from top portion of text (before beverage keywords)
+        brand = self._extract_brand_before_keywords(raw_text)
+        if brand:
+            src_boxes = self._boxes_for_phrase(boxes, brand)
+            return ExtractedField(
+                value=brand,
+                confidence=0.85,
+                source_boxes=src_boxes,
+                extraction_method="regex_position",
+                notes="Brand extracted before beverage keywords"
+            )
+        
+        # Strategy 3: Spatial analysis using OCR boxes
+        if boxes:
+            brand, src_boxes = self._extract_brand_spatial(boxes)
+            if brand:
+                return ExtractedField(
+                    value=brand,
+                    confidence=0.75,
+                    source_boxes=src_boxes,
+                    extraction_method="spatial",
+                    notes="Brand from spatial analysis"
+                )
+        
+        # Fallback: First meaningful tokens (filter stop/fluff)
+        brand, src_boxes = self._extract_brand_fallback(raw_text, boxes)
         return ExtractedField(
-            value=None,
-            confidence=0.0,
-            extraction_method="spatial",
-            notes="No brand candidate found"
+            value=brand,
+            confidence=0.5,
+            source_boxes=src_boxes,
+            extraction_method="fallback",
+            notes="Fallback to first meaningful words"
         )
+    
+    def _boxes_for_phrase(self, boxes: List[OCRBox], phrase: str) -> List[OCRBox]:
+        """
+        Find OCR boxes that contain tokens from a phrase.
+        Used to populate source_boxes for regex-extracted brands.
+        """
+        if not boxes or not phrase:
+            return []
+        
+        phrase_upper = phrase.upper()
+        phrase_tokens = set(phrase_upper.split())
+        
+        hits = []
+        for box in boxes:
+            box_text = re.sub(r"\s+", " ", box.text.upper()).strip()
+            box_tokens = set(box_text.split())
+            # Check if any phrase token appears in this box
+            if any(t in box_tokens for t in phrase_tokens):
+                hits.append(box)
+        
+        if not hits:
+            return []
+        
+        # Filter to top region only (brand should be near top)
+        if hits:
+            min_y = min(b.top for b in boxes)
+            max_y = max(b.bottom for b in boxes)
+            top_threshold = min_y + (max_y - min_y) * 0.4
+            hits = [b for b in hits if b.center_y < top_threshold]
+        
+        # Sort by position: top-to-bottom, then left-to-right
+        hits = sorted(hits, key=lambda b: (b.center_y, b.left))
+        
+        # Limit to reasonable number of boxes
+        return hits[:8]
+    
+    def _is_plausible_brand(self, brand: str) -> bool:
+        """
+        Validate that extracted brand is plausible (not beverage type or fluff).
+        
+        Rejects:
+        - "KENTUCKY STRAIGHT BOURBON SPIRITS" (contains beverage keywords)
+        - "PREMIUM RESERVE DISTILLING" (mostly marketing fluff)
+        - "THE COMPANY" (no meaningful tokens)
+        """
+        tokens = brand.upper().split()
+        tokens_lower = {t.lower() for t in tokens}
+        
+        # Reject if beverage keyword is inside "brand"
+        if any(kw in tokens_lower for kw in BEVERAGE_KEYWORDS):
+            return False
+        
+        # Reject if brand is mostly marketing fluff (2+ fluff words)
+        fluff_count = sum(1 for t in tokens_lower if t in MARKETING_KEYWORDS)
+        if fluff_count >= 2:
+            return False
+        
+        # Get suffix words to exclude from "meaningful" count
+        suffix_words = set()
+        for part in re.split(r"[|()]", BRAND_SUFFIX_PATTERN):
+            part = part.strip().strip("?").lower()
+            if part:
+                suffix_words.add(part)
+        
+        # Require at least 1 meaningful token (not stop word, suffix, or fluff)
+        meaningful = [
+            t for t in tokens_lower 
+            if t not in BRAND_STOP_WORDS 
+            and t not in suffix_words 
+            and t not in MARKETING_KEYWORDS
+            and len(t) > 1
+        ]
+        
+        return len(meaningful) >= 1 and len(tokens) >= 2
+    
+    def _extract_brand_with_suffix(self, raw_text: str) -> Optional[str]:
+        """
+        Extract brand phrase ending with DISTILLERY/BREWING/WINERY etc.
+        
+        Example: "TOM OLD DISTILLERY" from "TOM OLD DISTILLERY Premium Small Batch..."
+        
+        Validates result to avoid false positives like "BOURBON SPIRITS".
+        """
+        # Normalize text
+        text = re.sub(r"\s+", " ", raw_text.upper()).strip()
+        
+        # Pattern: 1-5 words followed by producer keyword
+        # Matches: "OLD TOM DISTILLERY", "JACK DANIEL'S DISTILLERY", etc.
+        pattern = rf"\b([A-Z0-9'&\-]{{2,}}(?:\s+[A-Z0-9'&\-]{{2,}}){{0,4}}\s+{BRAND_SUFFIX_PATTERN})\b"
+        
+        # Find all matches and pick the best one
+        for match in re.finditer(pattern, text):
+            brand = match.group(1).strip()
+            
+            # Validate: must be plausible brand (not beverage type or fluff)
+            if self._is_plausible_brand(brand):
+                logger.debug(f"Found brand with suffix: {brand}")
+                return brand
+            else:
+                logger.debug(f"Rejected implausible brand: {brand}")
+        
+        return None
+    
+    def _extract_brand_before_keywords(self, raw_text: str) -> Optional[str]:
+        """
+        Extract brand as text before beverage type keywords.
+        
+        Example: "OLD TOM" from "OLD TOM Kentucky Straight Bourbon Whiskey"
+        
+        Caps result to MAX_BRAND_TOKENS and stops at obvious markers.
+        """
+        MAX_BRAND_TOKENS = 6
+        STOP_MARKERS = {
+            "BATCH", "PROOF", "ML", "M L", "GOVERNMENT", "WARNING", 
+            "ALC", "VOL", "ALCOHOL", "CONTAINS", "IMPORTED", "PRODUCED"
+        }
+        
+        text = re.sub(r"\s+", " ", raw_text.upper()).strip()
+        
+        # Build pattern for beverage keywords
+        beverage_pattern = "|".join(kw.upper() for kw in BEVERAGE_KEYWORDS)
+        
+        # Find text before first beverage keyword
+        pattern = rf"^(.+?)\s+(?:KENTUCKY\s+)?(?:STRAIGHT\s+)?(?:{beverage_pattern})"
+        
+        match = re.search(pattern, text)
+        if match:
+            brand = match.group(1).strip()
+            
+            # Tokenize and truncate at stop markers or numbers
+            tokens = brand.split()
+            cut_tokens = []
+            for t in tokens:
+                # Stop at markers or tokens starting with digits
+                if t in STOP_MARKERS or re.match(r"^\d", t):
+                    break
+                cut_tokens.append(t)
+            
+            # Cap at MAX_BRAND_TOKENS
+            cut_tokens = cut_tokens[:MAX_BRAND_TOKENS]
+            brand = " ".join(cut_tokens).strip()
+            
+            # Remove marketing fluff from end
+            for fluff in MARKETING_KEYWORDS:
+                brand = re.sub(rf"\s+{fluff.upper()}$", "", brand, flags=re.IGNORECASE)
+            
+            # Validate
+            if len(brand) >= 3 and self._is_plausible_brand(brand):
+                logger.debug(f"Found brand before keywords: {brand}")
+                return brand
+        
+        return None
+    
+    def _extract_brand_spatial(self, boxes: List[OCRBox]) -> Tuple[Optional[str], List[OCRBox]]:
+        """
+        Extract brand using spatial analysis of OCR boxes.
+        Looks for prominent text in top region, sorted left-to-right.
+        
+        Returns:
+            Tuple of (brand_text, source_boxes)
+        """
+        if not boxes:
+            return None, []
+        
+        # Get image bounds
+        min_y = min(b.top for b in boxes)
+        max_y = max(b.bottom for b in boxes)
+        image_height = max_y - min_y
+        
+        # Get boxes in top 35% (where brand usually is)
+        top_threshold = min_y + image_height * 0.35
+        top_boxes = [b for b in boxes if b.center_y < top_threshold]
+        
+        if not top_boxes:
+            return None, []
+        
+        # Group by line and sort left-to-right
+        lines = self._group_boxes_by_line(top_boxes)
+        
+        if not lines:
+            return None, []
+        
+        # Find line with largest text (most prominent)
+        best_line = max(lines, key=lambda line: sum(b.height for b in line) / len(line))
+        
+        # Sort boxes left-to-right within the line
+        sorted_line = sorted(best_line, key=lambda b: b.left)
+        
+        # Join text
+        brand = " ".join(b.text.strip() for b in sorted_line)
+        brand = re.sub(r"\s+", " ", brand).strip()
+        
+        if len(brand) >= 3:
+            return brand, sorted_line
+        return None, []
+    
+    def _extract_brand_fallback(self, raw_text: str, boxes: List[OCRBox]) -> Tuple[Optional[str], List[OCRBox]]:
+        """
+        Fallback brand extraction: first meaningful tokens (filter stop/fluff).
+        
+        Better than "first 4 words" which could return "THE PREMIUM RESERVE AGED".
+        """
+        MAX_FALLBACK_TOKENS = 4
+        
+        text = re.sub(r"\s+", " ", raw_text.upper()).strip()
+        tokens = text.split()
+        
+        # Filter out stop words and marketing fluff from the beginning
+        meaningful = []
+        for t in tokens:
+            t_lower = t.lower()
+            
+            # Stop at beverage keywords
+            if t_lower in BEVERAGE_KEYWORDS:
+                break
+            
+            # Stop at numbers (likely ABV, proof, or volume)
+            if re.match(r"^\d", t):
+                break
+            
+            # Skip stop words and fluff at the beginning
+            if not meaningful and (t_lower in BRAND_STOP_WORDS or t_lower in MARKETING_KEYWORDS):
+                continue
+            
+            meaningful.append(t)
+            
+            if len(meaningful) >= MAX_FALLBACK_TOKENS:
+                break
+        
+        if meaningful:
+            brand = " ".join(meaningful)
+            src_boxes = self._boxes_for_phrase(boxes, brand)
+            return brand, src_boxes
+        
+        return None, []
+    
+    def _group_boxes_by_line(self, boxes: List[OCRBox], y_threshold: int = 25) -> List[List[OCRBox]]:
+        """
+        Group boxes that are on the same horizontal line.
+        """
+        if not boxes:
+            return []
+        
+        sorted_boxes = sorted(boxes, key=lambda b: b.center_y)
+        
+        lines = []
+        current_line = [sorted_boxes[0]]
+        
+        for box in sorted_boxes[1:]:
+            if abs(box.center_y - current_line[0].center_y) <= y_threshold:
+                current_line.append(box)
+            else:
+                lines.append(current_line)
+                current_line = [box]
+        
+        if current_line:
+            lines.append(current_line)
+        
+        return lines
     
     def _extract_class_type(
         self, 
@@ -428,7 +692,8 @@ class FieldExtractor:
         text = re.sub(r'\s+', ' ', text)
         # Remove common OCR artifacts
         text = text.replace('|', 'I')
-        text = text.replace('0', 'O')  # Context-dependent, but OK for warning
+        # Replace 0 with O only when surrounded by letters (avoids "(1)" → "(I)")
+        text = re.sub(r'(?<=[A-Z])0(?=[A-Z])', 'O', text)
         # Fix common OCR joins
         text = re.sub(r'SURGEONGENERAL', 'SURGEON GENERAL', text)
         text = re.sub(r'GOVERNMENTWARNING', 'GOVERNMENT WARNING', text)

@@ -52,6 +52,15 @@ class ImagePreprocessor:
         """
         Preprocess image for OCR.
         
+        Optimized pipeline order:
+        1. Load & resize
+        2. ROI detection (optional)
+        3. Grayscale
+        4. Deskew (on grayscale - better for Hough detection)
+        5. Denoise (ONLY when needed - biggest performance saver)
+        6. Sharpen
+        7. CLAHE/adaptive threshold
+        
         Args:
             image_bytes: Raw image bytes
             for_fallback: If True, apply more aggressive preprocessing for fallback pass
@@ -99,17 +108,29 @@ class ImagePreprocessor:
         else:
             gray = image
         
-        # Denoise (lighter for fallback to preserve detail)
-        h_param = 8 if for_fallback else 10
-        denoised = cv2.fastNlMeansDenoising(gray, None, h=h_param, templateWindowSize=7, searchWindowSize=21)
-        metadata["preprocessing_steps"].append("denoise")
+        # Deskew ONLY in fallback mode (HoughLinesP is expensive)
+        # Most clean images don't need deskew
+        if for_fallback:
+            gray, angle = self._deskew(gray)
+            if abs(angle) > 0.5:
+                metadata["preprocessing_steps"].append(f"deskew_{angle:.1f}deg")
+                metadata["deskew_angle"] = angle
         
-        # Sharpen lightly after denoise (helps EasyOCR)
-        sharpened = self._sharpen(denoised)
+        # Denoise ONLY when needed (expensive operation - biggest perf win)
+        # Only apply for: fallback pass, blurry images, or low contrast images
+        do_denoise = for_fallback or quality.is_blurry or quality.is_low_contrast
+        if do_denoise:
+            h_param = 8 if for_fallback else 10
+            gray = cv2.fastNlMeansDenoising(gray, None, h=h_param, templateWindowSize=7, searchWindowSize=21)
+            metadata["preprocessing_steps"].append("denoise")
+        
+        # Sharpen lightly (helps EasyOCR)
+        sharpened = self._sharpen(gray)
         metadata["preprocessing_steps"].append("sharpen")
         
-        # Adaptive threshold for glossy/reflective packaging
+        # Contrast enhancement
         if quality.is_low_contrast or for_fallback:
+            # Adaptive threshold for glossy/reflective packaging
             enhanced = self._adaptive_threshold(sharpened)
             metadata["preprocessing_steps"].append("adaptive_threshold")
         else:
@@ -117,12 +138,6 @@ class ImagePreprocessor:
             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
             enhanced = clahe.apply(sharpened)
             metadata["preprocessing_steps"].append("clahe")
-        
-        # Deskew small angles (±10°)
-        enhanced, angle = self._deskew(enhanced)
-        if abs(angle) > 0.5:
-            metadata["preprocessing_steps"].append(f"deskew_{angle:.1f}deg")
-            metadata["deskew_angle"] = angle
         
         # Convert back to BGR for EasyOCR (it accepts both but BGR is standard)
         result = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
@@ -197,22 +212,38 @@ class ImagePreprocessor:
         Detect the label/text-dense region and crop to it.
         Improves OCR by focusing on relevant area.
         
+        Optimized:
+        - Runs detection on downscaled preview (faster)
+        - Maps bbox back to original resolution
+        - Conservative settings to avoid cropping too much
+        
         Returns:
             Tuple of (cropped image, whether ROI was applied)
         """
         try:
-            # Convert to grayscale
-            if len(image.shape) == 3:
-                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            height, width = image.shape[:2]
+            
+            # Downscale for faster detection (target ~600px width)
+            PREVIEW_WIDTH = 600
+            if width > PREVIEW_WIDTH:
+                scale = PREVIEW_WIDTH / width
+                preview = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
             else:
-                gray = image.copy()
+                preview = image
+                scale = 1.0
+            
+            # Convert to grayscale
+            if len(preview.shape) == 3:
+                gray = cv2.cvtColor(preview, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = preview.copy()
             
             # Edge detection
             edges = cv2.Canny(gray, 50, 150)
             
-            # Dilate to connect text regions
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
-            dilated = cv2.dilate(edges, kernel, iterations=2)
+            # Dilate to connect text regions - use smaller kernel
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+            dilated = cv2.dilate(edges, kernel, iterations=1)
             
             # Find contours
             contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -223,16 +254,21 @@ class ImagePreprocessor:
             # Find the largest contour (likely the label)
             largest_contour = max(contours, key=cv2.contourArea)
             
-            # Get bounding rectangle
+            # Get bounding rectangle (on preview)
             x, y, w, h = cv2.boundingRect(largest_contour)
             
-            # Check if the ROI is significant (at least 20% of image)
-            img_area = image.shape[0] * image.shape[1]
+            # Check if the ROI is significant (at least 30% of preview)
+            preview_area = preview.shape[0] * preview.shape[1]
             roi_area = w * h
             
-            if roi_area < 0.2 * img_area or roi_area > 0.95 * img_area:
-                # ROI too small or too similar to original, skip
+            if roi_area < 0.3 * preview_area or roi_area > 0.95 * preview_area:
                 return image, False
+            
+            # Map back to original resolution
+            x = int(x / scale)
+            y = int(y / scale)
+            w = int(w / scale)
+            h = int(h / scale)
             
             # Add padding (5-10%)
             pad_x = int(w * 0.08)
@@ -240,8 +276,8 @@ class ImagePreprocessor:
             
             x1 = max(0, x - pad_x)
             y1 = max(0, y - pad_y)
-            x2 = min(image.shape[1], x + w + pad_x)
-            y2 = min(image.shape[0], y + h + pad_y)
+            x2 = min(width, x + w + pad_x)
+            y2 = min(height, y + h + pad_y)
             
             cropped = image[y1:y2, x1:x2]
             

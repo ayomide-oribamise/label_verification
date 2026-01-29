@@ -144,12 +144,16 @@ class VerificationService:
         expected: str
     ) -> FieldVerification:
         """
-        Verify brand name using fuzzy matching.
+        Verify brand name using token-set similarity (order-insensitive).
+        
+        This handles cases like:
+        - "TOM OLD DISTILLERY" vs "OLD TOM DISTILLERY" (word order swap)
+        - "OLD TOM" vs "OLD TOM DISTILLERY" (partial match)
         
         Thresholds:
-        - >= 0.95: Match
-        - 0.85-0.94: Review (likely match)
-        - < 0.85: Mismatch
+        - >= 0.85: Match (token overlap is strong)
+        - 0.70-0.84: Review (likely match)
+        - < 0.70: Mismatch
         """
         if not extracted.value:
             return FieldVerification(
@@ -163,17 +167,26 @@ class VerificationService:
             )
         
         # Normalize for comparison
-        extracted_norm = self._normalize_text(extracted.value)
-        expected_norm = self._normalize_text(expected)
+        extracted_norm = self._normalize_brand(extracted.value)
+        expected_norm = self._normalize_brand(expected)
         
-        # Calculate similarity score
-        similarity = fuzz.ratio(extracted_norm, expected_norm) / 100.0
+        # Core token overlap (ignores DISTILLERY, BREWING, etc.)
+        # Calculate this first as it gates partial_ratio usage
+        core_score = self._core_brand_similarity(extracted.value, expected)
         
-        # Also try token sort ratio for word order differences
-        token_similarity = fuzz.token_sort_ratio(extracted_norm, expected_norm) / 100.0
+        # Primary similarity methods - token-based, order-insensitive
+        ts = fuzz.token_set_ratio(extracted_norm, expected_norm) / 100.0
+        tso = fuzz.token_sort_ratio(extracted_norm, expected_norm) / 100.0
         
-        # Use the higher score
-        score = max(similarity, token_similarity)
+        score = max(ts, tso, core_score)
+        
+        # Only allow partial_ratio to influence score if core token overlap exists
+        # This prevents "substring wins" false positives (e.g., "TOM" matching "OLD TOM")
+        if core_score >= 0.5:
+            pr = fuzz.partial_ratio(extracted_norm, expected_norm) / 100.0
+            score = max(score, pr)
+        
+        logger.debug(f"Brand comparison: '{extracted.value}' vs '{expected}' -> score={score:.2f}")
         
         if score >= self.settings.brand_match_threshold:
             return FieldVerification(
@@ -208,15 +221,228 @@ class VerificationService:
                         f"Similarity: {score:.0%}"
             )
     
+    def _normalize_brand(self, text: str) -> str:
+        """Normalize brand text for comparison."""
+        text = text.upper()
+        text = re.sub(r'\s+', ' ', text)
+        # Keep apostrophes (O'BRIEN), remove other punctuation
+        text = re.sub(r"[^\w\s']", " ", text)
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
+    
+    def _core_brand_similarity(self, extracted: str, expected: str) -> float:
+        """
+        Compare core brand tokens, ignoring company suffixes.
+        
+        This handles "OLD TOM" matching "OLD TOM DISTILLERY" by
+        stripping DISTILLERY/BREWING/etc. for comparison only.
+        """
+        # Suffixes that are optional for matching
+        BRAND_SUFFIXES = {
+            "DISTILLERY", "DISTILLING", "BREWING", "BREWERY", 
+            "WINERY", "VINEYARD", "VINEYARDS", "CELLARS", "CELLAR",
+            "COMPANY", "CO", "INC", "LLC", "LTD", "SPIRITS"
+        }
+        
+        def get_core_tokens(text: str) -> set:
+            text = text.upper()
+            text = re.sub(r"[^\w\s]", " ", text)
+            tokens = text.split()
+            # Remove brand suffixes
+            return {t for t in tokens if t not in BRAND_SUFFIXES and len(t) > 1}
+        
+        extracted_tokens = get_core_tokens(extracted)
+        expected_tokens = get_core_tokens(expected)
+        
+        if not expected_tokens:
+            return 0.0
+        
+        # Calculate Jaccard-like overlap
+        common = extracted_tokens & expected_tokens
+        union = extracted_tokens | expected_tokens
+        
+        if not union:
+            return 0.0
+        
+        overlap_score = len(common) / len(union)
+        
+        # Bonus if all expected core tokens are found in extracted
+        # e.g., expected="OLD TOM" and extracted="OLD TOM DISTILLERY"
+        if expected_tokens and expected_tokens <= extracted_tokens:
+            overlap_score = max(overlap_score, 0.95)
+        
+        # Also bonus if all extracted core tokens are found in expected
+        # e.g., extracted="OLD TOM" and expected="OLD TOM DISTILLERY"
+        if extracted_tokens and extracted_tokens <= expected_tokens:
+            overlap_score = max(overlap_score, 0.90)
+        
+        return overlap_score
+    
+    # Comprehensive beverage class synonyms - maps canonical name to all variants
+    # This enables semantic matching: "IPA" matches "India Pale Ale"
+    BEVERAGE_CLASS_SYNONYMS = {
+        # === BEER ===
+        "IPA": {
+            "IPA", "INDIA PALE ALE", "INDIAN PALE ALE"
+        },
+        "DIPA": {
+            "DIPA", "DOUBLE INDIA PALE ALE", "DOUBLE IPA", "IMPERIAL IPA"
+        },
+        "NEIPA": {
+            "NEIPA", "NEW ENGLAND IPA", "NEW ENGLAND INDIA PALE ALE", "HAZY IPA"
+        },
+        "APA": {
+            "APA", "AMERICAN PALE ALE", "PALE ALE"
+        },
+        "ESB": {
+            "ESB", "EXTRA SPECIAL BITTER", "ENGLISH SPECIAL BITTER"
+        },
+        "STOUT": {
+            "STOUT", "IMPERIAL STOUT", "MILK STOUT", "DRY STOUT", "OATMEAL STOUT"
+        },
+        "PORTER": {
+            "PORTER", "ROBUST PORTER", "BALTIC PORTER"
+        },
+        "PILSNER": {
+            "PILSNER", "PILS", "CZECH PILSNER", "GERMAN PILSNER"
+        },
+        "LAGER": {
+            "LAGER", "PALE LAGER", "AMBER LAGER", "DARK LAGER"
+        },
+        "HELLES": {
+            "HELLES", "HELLES LAGER", "GERMAN HELLES"
+        },
+        "BOCK": {
+            "BOCK", "MAIBOCK", "DOPPELBOCK", "EISBOCK"
+        },
+        "WHEAT BEER": {
+            "WHEAT BEER", "HEFEWEIZEN", "WEISSBIER", "WITBIER", "WHITE ALE"
+        },
+        "SAISON": {
+            "SAISON", "FARMHOUSE ALE"
+        },
+        "SOUR": {
+            "SOUR", "SOUR ALE", "GOSE", "BERLINER WEISSE"
+        },
+        "KOLSCH": {
+            "KOLSCH", "KÖLSCH"
+        },
+        "BITTER": {
+            "BITTER", "ENGLISH BITTER"
+        },
+        "ALE": {
+            "ALE", "PALE ALE", "BROWN ALE", "GOLDEN ALE"
+        },
+        "CRAFT BEER": {
+            "CRAFT BEER", "CRAFT ALE", "CRAFT LAGER"
+        },
+        
+        # === SPIRITS (CRITICAL - labels rarely use formal names) ===
+        "BOURBON": {
+            "BOURBON", "KENTUCKY STRAIGHT BOURBON WHISKEY", "STRAIGHT BOURBON WHISKEY",
+            "BOURBON WHISKEY", "KENTUCKY BOURBON", "STRAIGHT BOURBON"
+        },
+        "RYE": {
+            "RYE", "RYE WHISKEY", "STRAIGHT RYE WHISKEY", "RYE WHISKY"
+        },
+        "TENNESSEE WHISKEY": {
+            "TENNESSEE WHISKEY", "TENNESSEE WHISKY"
+        },
+        "SCOTCH": {
+            "SCOTCH", "SCOTCH WHISKY", "SINGLE MALT SCOTCH", "BLENDED SCOTCH",
+            "SINGLE MALT", "BLENDED WHISKY"
+        },
+        "IRISH WHISKEY": {
+            "IRISH WHISKEY", "IRISH WHISKY"
+        },
+        "WHISKEY": {
+            "WHISKEY", "WHISKY"
+        },
+        "VODKA": {
+            "VODKA"
+        },
+        "GIN": {
+            "GIN", "LONDON DRY GIN", "DRY GIN"
+        },
+        "RUM": {
+            "RUM", "DARK RUM", "LIGHT RUM", "SPICED RUM", "WHITE RUM", "GOLD RUM"
+        },
+        "TEQUILA": {
+            "TEQUILA", "BLANCO TEQUILA", "REPOSADO TEQUILA", "AÑEJO TEQUILA",
+            "SILVER TEQUILA", "GOLD TEQUILA"
+        },
+        "MEZCAL": {
+            "MEZCAL"
+        },
+        "BRANDY": {
+            "BRANDY", "COGNAC", "ARMAGNAC"
+        },
+        "LIQUEUR": {
+            "LIQUEUR", "CORDIAL", "SCHNAPPS"
+        },
+        
+        # === WINE ===
+        "WINE": {
+            "WINE", "RED WINE", "WHITE WINE", "ROSE WINE", "ROSÉ"
+        },
+        "CABERNET SAUVIGNON": {
+            "CABERNET SAUVIGNON", "CAB SAUV", "CABERNET"
+        },
+        "CHARDONNAY": {
+            "CHARDONNAY", "CHARD"
+        },
+        "PINOT NOIR": {
+            "PINOT NOIR", "PINOT"
+        },
+        "SAUVIGNON BLANC": {
+            "SAUVIGNON BLANC", "SAV BLANC"
+        },
+        "MERLOT": {
+            "MERLOT"
+        },
+        "SPARKLING WINE": {
+            "SPARKLING WINE", "CHAMPAGNE", "PROSECCO", "CAVA", "SPARKLING"
+        },
+        
+        # === OTHER ===
+        "MALT BEVERAGE": {
+            "MALT BEVERAGE", "FLAVORED MALT BEVERAGE", "FMB"
+        },
+        "HARD SELTZER": {
+            "HARD SELTZER", "SPIKED SELTZER", "SELTZER"
+        },
+        "CIDER": {
+            "CIDER", "HARD CIDER"
+        },
+    }
+    
+    # Build reverse lookup: variant -> canonical
+    _VARIANT_TO_CANONICAL = None
+    
+    @classmethod
+    def _get_variant_to_canonical(cls) -> dict:
+        """Build/get reverse lookup from variant to canonical name."""
+        if cls._VARIANT_TO_CANONICAL is None:
+            cls._VARIANT_TO_CANONICAL = {}
+            for canonical, variants in cls.BEVERAGE_CLASS_SYNONYMS.items():
+                for variant in variants:
+                    cls._VARIANT_TO_CANONICAL[variant.upper()] = canonical
+        return cls._VARIANT_TO_CANONICAL
+    
     def _verify_class_type(
         self,
         extracted: ExtractedField,
         expected: str
     ) -> FieldVerification:
         """
-        Verify class/type using fuzzy matching.
+        Verify class/type using semantic beverage classification.
         
-        More lenient than brand - focuses on key terms.
+        Maps both extracted and expected to canonical forms, then compares.
+        This handles:
+        - "IPA" matches "India Pale Ale"
+        - "Kentucky Straight Bourbon Whiskey" matches "Bourbon"
+        - "Cognac" matches "Brandy"
+        - "Champagne" matches "Sparkling Wine"
         """
         if not extracted.value:
             return FieldVerification(
@@ -229,6 +455,27 @@ class VerificationService:
                 details="No beverage type keywords found. Manual review required."
             )
         
+        # Map both to canonical forms
+        extracted_canonical = self._get_canonical_class(extracted.value)
+        expected_canonical = self._get_canonical_class(expected)
+        
+        logger.debug(f"Class/type: extracted='{extracted.value}' -> '{extracted_canonical}', "
+                    f"expected='{expected}' -> '{expected_canonical}'")
+        
+        # Canonical match = definitive pass
+        if extracted_canonical and expected_canonical:
+            if extracted_canonical == expected_canonical:
+                return FieldVerification(
+                    field_name="Class/Type",
+                    status=VerificationStatus.MATCH,
+                    extracted_value=extracted.value,
+                    expected_value=expected,
+                    confidence=1.0,
+                    message="Class/type matches",
+                    details=f"Semantic match: both are '{extracted_canonical}'"
+                )
+        
+        # Fallback to fuzzy matching for edge cases
         extracted_norm = self._normalize_text(extracted.value)
         expected_norm = self._normalize_text(expected)
         
@@ -274,6 +521,44 @@ class VerificationService:
                 message="Class/type does not match",
                 details=f"Label shows '{extracted.value}' but application states '{expected}'."
             )
+    
+    def _get_canonical_class(self, class_type: str) -> Optional[str]:
+        """
+        Map a class/type string to its canonical form.
+        
+        Examples:
+        - "India Pale Ale" -> "IPA"
+        - "Kentucky Straight Bourbon Whiskey" -> "BOURBON"
+        - "Cognac" -> "BRANDY"
+        - "Champagne" -> "SPARKLING WINE"
+        
+        Returns None if no canonical form found.
+        """
+        if not class_type:
+            return None
+        
+        variant_map = self._get_variant_to_canonical()
+        text_upper = class_type.upper().strip()
+        
+        # Direct lookup
+        if text_upper in variant_map:
+            return variant_map[text_upper]
+        
+        # Check if any variant is contained in the text (for longer strings)
+        # Sort by length descending to match longer variants first
+        for variant in sorted(variant_map.keys(), key=len, reverse=True):
+            if variant in text_upper:
+                return variant_map[variant]
+        
+        # Check if text contains any variant
+        text_tokens = set(text_upper.split())
+        for variant, canonical in variant_map.items():
+            variant_tokens = set(variant.split())
+            # If all variant tokens are in text, it's a match
+            if variant_tokens and variant_tokens <= text_tokens:
+                return canonical
+        
+        return None
     
     def _verify_abv(
         self,

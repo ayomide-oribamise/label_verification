@@ -99,9 +99,11 @@ async def verify_label(
         )
     
     try:
-        # Preprocess image
+        # Stage 1: Preprocess image
+        preprocess_start = time.time()
         processed_image, preprocessing_meta = preprocessor.preprocess(image_bytes)
-        logger.info(f"Preprocessing steps: {preprocessing_meta['preprocessing_steps']}")
+        preprocess_ms = int((time.time() - preprocess_start) * 1000)
+        logger.info(f"Preprocessing steps: {preprocessing_meta['preprocessing_steps']} ({preprocess_ms}ms)")
         
         # Check for quality warnings and log
         if preprocessing_meta.get("quality", {}).get("is_blurry"):
@@ -109,12 +111,15 @@ async def verify_label(
         if preprocessing_meta.get("quality", {}).get("is_low_contrast"):
             logger.warning("Image detected as low contrast")
         
-        # Run OCR with fallback strategies for better accuracy
+        # Stage 2: Run OCR with fallback strategies for better accuracy
+        ocr_start = time.time()
         ocr_result, ocr_metrics = ocr_service.process_with_fallback(
             processed_image,
             preprocessor=preprocessor,
             image_bytes=image_bytes
         )
+        ocr_ms = int((time.time() - ocr_start) * 1000)
+        logger.info(f"OCR completed ({ocr_ms}ms)")
         
         if not ocr_result.boxes:
             # Include quality recommendation if available
@@ -127,8 +132,10 @@ async def verify_label(
                 error=error_msg
             )
         
-        # Extract fields from OCR result
+        # Stage 3: Extract fields from OCR result
+        extract_start = time.time()
         extraction_result = field_extractor.extract_all(ocr_result)
+        extract_ms = int((time.time() - extract_start) * 1000)
         
         # Build extracted fields response
         extracted = ExtractedFields(
@@ -141,7 +148,8 @@ async def verify_label(
             ocr_confidence=extraction_result.overall_confidence
         )
         
-        # Perform verification
+        # Stage 4: Perform verification
+        verify_start = time.time()
         verification_result = verification_service.verify(
             extraction=extraction_result,
             expected_brand=brand_name,
@@ -150,8 +158,12 @@ async def verify_label(
             expected_net_contents=net_contents_ml,
             expected_has_warning=has_warning,
         )
+        verify_ms = int((time.time() - verify_start) * 1000)
         
-        processing_time = int((time.time() - start_time) * 1000)
+        total_time = int((time.time() - start_time) * 1000)
+        
+        # Log timing breakdown
+        logger.info(f"Timing breakdown: preprocess={preprocess_ms}ms, ocr={ocr_ms}ms, extract={extract_ms}ms, verify={verify_ms}ms, total={total_time}ms")
         
         # Convert verification result to response model
         field_results = [
@@ -170,8 +182,17 @@ async def verify_label(
             overall_status=VerificationStatus(verification_result.overall_status.value),
             fields=field_results,
             summary=verification_result.summary,
-            processing_time_ms=processing_time
+            processing_time_ms=total_time
         )
+        
+        # Add timing breakdown to result for debugging
+        result_dict = result.model_dump() if hasattr(result, 'model_dump') else result.dict()
+        result_dict['timing'] = {
+            'preprocess_ms': preprocess_ms,
+            'ocr_ms': ocr_ms,
+            'extract_ms': extract_ms,
+            'verify_ms': verify_ms
+        }
         
         return VerificationResponse(
             success=True,

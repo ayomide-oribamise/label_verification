@@ -382,7 +382,7 @@ class BatchProcessor:
         """
         if max_workers is None:
             max_workers = min(
-                self.settings.batch_max_workers,
+                self.settings.max_workers,  # Fixed: was batch_max_workers
                 multiprocessing.cpu_count(),
                 len(csv_rows)  # No point having more workers than items
             )

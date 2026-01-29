@@ -179,7 +179,11 @@ class OCRService:
         image_bytes: Optional[bytes] = None
     ) -> Tuple[OCRResult, OCRHealthMetrics]:
         """
-        Run OCR with confidence gating and fallback strategies.
+        Run OCR with region-based processing for speed.
+        
+        Strategy:
+        1. Try fast region-based OCR first (top + bottom regions)
+        2. Only fall back to full-image OCR if fields missing
         
         Args:
             image: Preprocessed image as numpy array
@@ -193,8 +197,20 @@ class OCRService:
         fallback_used = False
         rotation_used = 0
         
-        # First pass: standard OCR
-        result = self._process_single(image)
+        # Try fast region-based OCR first
+        result = self._process_regions(image)
+        
+        # Check if we got enough content
+        has_enough_content = (
+            result.average_confidence >= self.settings.ocr_confidence_threshold and
+            len(result.boxes) >= self.settings.ocr_min_token_count
+        )
+        
+        # If region-based failed, fall back to full image
+        if not has_enough_content:
+            logger.info(f"Region OCR insufficient (conf={result.average_confidence:.2f}, tokens={len(result.boxes)}), trying full image...")
+            result = self._process_single(image)
+            fallback_used = True
         
         # Check if we need fallback
         needs_fallback = (
@@ -294,7 +310,11 @@ class OCRService:
         with self._semaphore:
             try:
                 # Build kwargs for readtext
-                kwargs = {}
+                kwargs = {
+                    'decoder': 'greedy',  # Faster than beamsearch
+                    'batch_size': 1,      # Predictable CPU usage
+                    'paragraph': False,   # Don't merge paragraphs (we do our own)
+                }
                 if allowlist:
                     kwargs['allowlist'] = allowlist
                 if blocklist:
@@ -340,8 +360,14 @@ class OCRService:
                 else:
                     avg_confidence = 0.0
                 
-                # Build raw text (sorted by vertical position, then horizontal)
-                sorted_boxes = sorted(boxes, key=lambda b: (b.top // 15, b.left))
+                # Build raw text (sorted by line, then left-to-right)
+                # Use dynamic line height based on median box height for better word ordering
+                if boxes:
+                    line_h = int(np.median([b.height for b in boxes]))
+                    line_h = max(12, min(line_h, 60))  # Clamp to reasonable range
+                else:
+                    line_h = 20
+                sorted_boxes = sorted(boxes, key=lambda b: (b.top // line_h, b.left))
                 raw_text = " ".join(b.text for b in sorted_boxes)
                 
                 return OCRResult(
@@ -355,6 +381,116 @@ class OCRService:
                 import traceback
                 traceback.print_exc()
                 return OCRResult.empty()
+    
+    def _process_regions(self, image: np.ndarray) -> OCRResult:
+        """
+        Run OCR on strategic regions instead of full image.
+        
+        Much faster than full-image OCR because:
+        - Fewer pixels to process
+        - Targeted regions for each field type
+        
+        Regions:
+        - Top 45%: Brand name, class/type
+        - Middle 40%: ABV, net contents (with allowlist for speed)
+        - Bottom 40%: Government warning
+        """
+        h, w = image.shape[:2]
+        
+        all_boxes = []
+        
+        # Region 1: Top 45% for brand and class (most important)
+        top_region = image[0:int(h * 0.45), :]
+        top_result = self._process_single(top_region)
+        
+        # Offset boxes to original image coordinates
+        for box in top_result.boxes:
+            all_boxes.append(box)  # Y offset is 0 for top region
+        
+        # Region 2: Middle region for ABV with allowlist (fast)
+        mid_start = int(h * 0.30)
+        mid_end = int(h * 0.70)
+        mid_region = image[mid_start:mid_end, :]
+        mid_result = self._process_single(mid_region, allowlist="0123456789.%ABVabvPROOFproof ")
+        
+        # Offset boxes
+        for box in mid_result.boxes:
+            # Adjust Y coordinates
+            adjusted_bbox = [
+                [p[0], p[1] + mid_start] for p in box.bbox
+            ]
+            all_boxes.append(OCRBox(
+                text=box.text,
+                confidence=box.confidence,
+                bbox=adjusted_bbox
+            ))
+        
+        # Region 3: Bottom 40% for warning and net contents
+        bottom_start = int(h * 0.55)
+        bottom_region = image[bottom_start:, :]
+        bottom_result = self._process_single(bottom_region)
+        
+        # Offset boxes
+        for box in bottom_result.boxes:
+            adjusted_bbox = [
+                [p[0], p[1] + bottom_start] for p in box.bbox
+            ]
+            all_boxes.append(OCRBox(
+                text=box.text,
+                confidence=box.confidence,
+                bbox=adjusted_bbox
+            ))
+        
+        # Deduplicate overlapping boxes (regions overlap)
+        all_boxes = self._deduplicate_boxes(all_boxes)
+        
+        # Calculate overall metrics
+        if all_boxes:
+            avg_confidence = sum(b.confidence for b in all_boxes) / len(all_boxes)
+            # Sort and build raw text
+            line_h = int(np.median([b.height for b in all_boxes])) if all_boxes else 20
+            line_h = max(12, min(line_h, 60))
+            sorted_boxes = sorted(all_boxes, key=lambda b: (b.top // line_h, b.left))
+            raw_text = " ".join(b.text for b in sorted_boxes)
+        else:
+            avg_confidence = 0.0
+            raw_text = ""
+        
+        logger.debug(f"Region OCR: {len(all_boxes)} boxes, conf={avg_confidence:.2f}")
+        
+        return OCRResult(
+            boxes=all_boxes,
+            raw_text=raw_text,
+            average_confidence=avg_confidence
+        )
+    
+    def _deduplicate_boxes(self, boxes: List[OCRBox]) -> List[OCRBox]:
+        """Remove duplicate boxes from overlapping regions."""
+        if len(boxes) <= 1:
+            return boxes
+        
+        # Sort by confidence (keep higher confidence duplicates)
+        sorted_boxes = sorted(boxes, key=lambda b: b.confidence, reverse=True)
+        
+        kept = []
+        for box in sorted_boxes:
+            is_duplicate = False
+            for kept_box in kept:
+                # Check if boxes overlap significantly (same text, close position)
+                if box.text.upper() == kept_box.text.upper():
+                    # Check Y overlap
+                    y_overlap = (
+                        min(box.bottom, kept_box.bottom) - max(box.top, kept_box.top)
+                    ) > min(box.height, kept_box.height) * 0.5
+                    
+                    if y_overlap:
+                        is_duplicate = True
+                        break
+            
+            if not is_duplicate:
+                kept.append(box)
+        
+        return kept
     
     def process(self, image: np.ndarray) -> OCRResult:
         """
