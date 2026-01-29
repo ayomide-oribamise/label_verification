@@ -99,31 +99,40 @@ resource "azurerm_container_app" "api" {
 
   template {
     # Container configuration
+    # Note: EasyOCR/PyTorch on CPU requires significant resources
+    # - 2 vCPU minimum for ~5-6s OCR time (vs 10s on 1 vCPU)
+    # - 4Gi memory for model loading + image processing
+    # - Sequential batch processing (max_workers=1) to avoid OOM
     container {
       name   = "api"
       image  = "${azurerm_container_registry.main.login_server}/label-verification-backend:${var.container_image_tag}"
       cpu    = var.container_cpu
       memory = var.container_memory
 
-      # Environment variables
+      # Environment variables (matching backend config.py settings)
       env {
-        name  = "IMAGE_MAX_SIZE_MB"
-        value = "5"
+        name  = "MAX_IMAGE_SIZE_MB"
+        value = "3"
       }
 
       env {
-        name  = "IMAGE_MAX_DIMENSION"
-        value = "2000"
+        name  = "MAX_IMAGE_DIMENSION"
+        value = "1024"  # Optimized for speed
       }
 
       env {
-        name  = "BATCH_MAX_FILES"
+        name  = "MAX_BATCH_SIZE"
         value = "50"
       }
 
       env {
-        name  = "BATCH_MAX_WORKERS"
-        value = "2"
+        name  = "MAX_WORKERS"
+        value = "1"  # Sequential processing - safer on limited CPU
+      }
+
+      env {
+        name  = "OCR_MAX_CONCURRENT"
+        value = "1"  # Prevent concurrent OCR - CPU bound
       }
 
       # Startup probe - give OCR model time to load
@@ -198,4 +207,3 @@ output "api_fqdn" {
   description = "Backend API FQDN"
   value       = azurerm_container_app.api.ingress[0].fqdn
 }
-
