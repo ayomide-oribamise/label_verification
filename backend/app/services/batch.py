@@ -285,16 +285,24 @@ def _process_single_label(args: Tuple) -> Dict[str, Any]:
             ocr_service.initialize()
         
         # Preprocess
-        processed_image, _ = preprocessor.preprocess(image_bytes)
+        processed_image, preprocessing_meta = preprocessor.preprocess(image_bytes)
         
-        # OCR
-        ocr_result = ocr_service.process(processed_image)
+        # OCR with fallback for better accuracy
+        ocr_result, ocr_metrics = ocr_service.process_with_fallback(
+            processed_image,
+            preprocessor=preprocessor,
+            image_bytes=image_bytes
+        )
         
         if not ocr_result.boxes:
+            quality_rec = preprocessing_meta.get("quality_recommendation", "")
+            error_msg = "Unable to extract text from image"
+            if quality_rec:
+                error_msg = quality_rec
             return {
                 "filename": filename,
                 "success": False,
-                "error": "Unable to extract text from image",
+                "error": error_msg,
                 "result": None
             }
         
@@ -490,16 +498,25 @@ class SequentialBatchProcessor:
                     continue
                 
                 # Preprocess
-                processed_image, _ = preprocessor.preprocess(image_bytes)
+                processed_image, preprocessing_meta = preprocessor.preprocess(image_bytes)
                 
-                # OCR
-                ocr_result = ocr_service.process(processed_image)
+                # OCR with fallback for better accuracy
+                ocr_result, ocr_metrics = ocr_service.process_with_fallback(
+                    processed_image,
+                    preprocessor=preprocessor,
+                    image_bytes=image_bytes
+                )
                 
                 if not ocr_result.boxes:
+                    # Include quality recommendation if available
+                    quality_rec = preprocessing_meta.get("quality_recommendation", "")
+                    error_msg = "Unable to extract text from image"
+                    if quality_rec:
+                        error_msg = quality_rec
                     results.append({
                         "filename": filename,
                         "success": False,
-                        "error": "Unable to extract text from image",
+                        "error": error_msg,
                         "result": None
                     })
                     continue

@@ -103,13 +103,28 @@ async def verify_label(
         processed_image, preprocessing_meta = preprocessor.preprocess(image_bytes)
         logger.info(f"Preprocessing steps: {preprocessing_meta['preprocessing_steps']}")
         
-        # Run OCR
-        ocr_result = ocr_service.process(processed_image)
+        # Check for quality warnings and log
+        if preprocessing_meta.get("quality", {}).get("is_blurry"):
+            logger.warning("Image detected as blurry")
+        if preprocessing_meta.get("quality", {}).get("is_low_contrast"):
+            logger.warning("Image detected as low contrast")
+        
+        # Run OCR with fallback strategies for better accuracy
+        ocr_result, ocr_metrics = ocr_service.process_with_fallback(
+            processed_image,
+            preprocessor=preprocessor,
+            image_bytes=image_bytes
+        )
         
         if not ocr_result.boxes:
+            # Include quality recommendation if available
+            quality_rec = preprocessing_meta.get("quality_recommendation", "")
+            error_msg = "Unable to extract text from image. Please upload a clearer label."
+            if quality_rec:
+                error_msg = quality_rec
             return VerificationResponse(
                 success=False,
-                error="Unable to extract text from image. Please upload a clearer label."
+                error=error_msg
             )
         
         # Extract fields from OCR result
@@ -217,20 +232,32 @@ async def extract_only(
         # Preprocess image
         processed_image, preprocessing_meta = preprocessor.preprocess(image_bytes)
         
-        # Run OCR - catch OCR-specific errors
+        # Run OCR with fallback - catch OCR-specific errors
         try:
-            ocr_result = ocr_service.process(processed_image)
+            ocr_result, ocr_metrics = ocr_service.process_with_fallback(
+                processed_image,
+                preprocessor=preprocessor,
+                image_bytes=image_bytes
+            )
         except Exception as e:
             logger.exception(f"OCR processing failed: {e}")
+            quality_rec = preprocessing_meta.get("quality_recommendation", "")
+            error_msg = "Unable to extract text from image. Please upload a clearer label."
+            if quality_rec:
+                error_msg = quality_rec
             raise HTTPException(
                 status_code=422,
-                detail="Unable to extract text from image. Please upload a clearer label."
+                detail=error_msg
             )
         
         if not ocr_result.boxes:
+            quality_rec = preprocessing_meta.get("quality_recommendation", "")
+            error_msg = "Unable to extract text from image. Please upload a clearer label."
+            if quality_rec:
+                error_msg = quality_rec
             raise HTTPException(
                 status_code=422,
-                detail="Unable to extract text from image. Please upload a clearer label."
+                detail=error_msg
             )
         
         # Extract fields from OCR result
@@ -482,9 +509,13 @@ async def get_ocr_boxes(
     if not ocr_service.is_ready:
         raise HTTPException(status_code=503, detail="OCR service not ready")
     
-    # Process
+    # Process with enhanced OCR
     processed_image, meta = preprocessor.preprocess(image_bytes)
-    ocr_result = ocr_service.process(processed_image)
+    ocr_result, ocr_metrics = ocr_service.process_with_fallback(
+        processed_image,
+        preprocessor=preprocessor,
+        image_bytes=image_bytes
+    )
     
     # Return detailed box info
     boxes_data = []
@@ -502,6 +533,15 @@ async def get_ocr_boxes(
     
     return {
         "preprocessing": meta,
+        "ocr_metrics": {
+            "average_confidence": ocr_metrics.average_confidence,
+            "token_count": ocr_metrics.token_count,
+            "processing_time_ms": ocr_metrics.processing_time_ms,
+            "image_dimensions": ocr_metrics.image_dimensions,
+            "fallback_used": ocr_metrics.fallback_used,
+            "rotation_used": ocr_metrics.rotation_used,
+            "quality_warning": ocr_metrics.quality_warning
+        },
         "box_count": len(boxes_data),
         "average_confidence": ocr_result.average_confidence,
         "raw_text": ocr_result.raw_text,

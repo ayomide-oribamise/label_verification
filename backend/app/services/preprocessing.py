@@ -1,11 +1,45 @@
-"""Image preprocessing utilities for improving OCR accuracy."""
+"""Image preprocessing utilities for improving OCR accuracy.
+
+Enhanced for EasyOCR with:
+- ROI detection (find label region)
+- Blur/quality detection
+- Adaptive thresholding for glossy labels
+- Sharpening after denoise
+- Rotation candidate support (0, 90, 180, 270)
+- Intelligent resizing
+"""
 
 import cv2
 import numpy as np
 from PIL import Image
 import io
-from typing import Tuple
+from typing import Tuple, List, Optional
+from dataclasses import dataclass
+import logging
+
 from ..config import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ImageQuality:
+    """Image quality assessment results."""
+    blur_score: float  # Laplacian variance - higher = sharper
+    contrast_score: float  # Std deviation - higher = more contrast
+    is_blurry: bool
+    is_low_contrast: bool
+    recommendation: Optional[str] = None
+
+
+@dataclass
+class PreprocessingResult:
+    """Result of preprocessing with metadata."""
+    image: np.ndarray
+    metadata: dict
+    quality: ImageQuality
+    roi_applied: bool = False
+    upscaled: bool = False
 
 
 class ImagePreprocessor:
@@ -14,12 +48,13 @@ class ImagePreprocessor:
     def __init__(self):
         self.settings = get_settings()
     
-    def preprocess(self, image_bytes: bytes) -> Tuple[np.ndarray, dict]:
+    def preprocess(self, image_bytes: bytes, for_fallback: bool = False) -> Tuple[np.ndarray, dict]:
         """
         Preprocess image for OCR.
         
         Args:
             image_bytes: Raw image bytes
+            for_fallback: If True, apply more aggressive preprocessing for fallback pass
             
         Returns:
             Tuple of (preprocessed image as numpy array, metadata dict)
@@ -29,14 +64,33 @@ class ImagePreprocessor:
         
         metadata = {
             "original_size": image.shape[:2],
-            "preprocessing_steps": []
+            "preprocessing_steps": [],
+            "quality": {}
         }
         
-        # Resize if too large
-        image, resized = self._resize_if_needed(image)
-        if resized:
-            metadata["preprocessing_steps"].append("resize")
+        # Assess image quality first
+        quality = self._assess_quality(image)
+        metadata["quality"] = {
+            "blur_score": quality.blur_score,
+            "contrast_score": quality.contrast_score,
+            "is_blurry": quality.is_blurry,
+            "is_low_contrast": quality.is_low_contrast
+        }
+        if quality.recommendation:
+            metadata["quality_recommendation"] = quality.recommendation
+        
+        # Resize intelligently (clamp max dimension, upscale tiny images)
+        image, resize_action = self._resize_intelligent(image, for_fallback)
+        if resize_action:
+            metadata["preprocessing_steps"].append(resize_action)
             metadata["resized_to"] = image.shape[:2]
+        
+        # Try ROI detection to focus on label region
+        roi_image, roi_applied = self._detect_and_crop_roi(image)
+        if roi_applied:
+            image = roi_image
+            metadata["preprocessing_steps"].append("roi_crop")
+            metadata["roi_size"] = image.shape[:2]
         
         # Convert to grayscale for processing
         if len(image.shape) == 3:
@@ -45,25 +99,184 @@ class ImagePreprocessor:
         else:
             gray = image
         
-        # Denoise
-        denoised = cv2.fastNlMeansDenoising(gray, None, h=10, templateWindowSize=7, searchWindowSize=21)
+        # Denoise (lighter for fallback to preserve detail)
+        h_param = 8 if for_fallback else 10
+        denoised = cv2.fastNlMeansDenoising(gray, None, h=h_param, templateWindowSize=7, searchWindowSize=21)
         metadata["preprocessing_steps"].append("denoise")
         
-        # Enhance contrast using CLAHE
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(denoised)
-        metadata["preprocessing_steps"].append("contrast_enhancement")
+        # Sharpen lightly after denoise (helps EasyOCR)
+        sharpened = self._sharpen(denoised)
+        metadata["preprocessing_steps"].append("sharpen")
         
-        # Deskew if needed
+        # Adaptive threshold for glossy/reflective packaging
+        if quality.is_low_contrast or for_fallback:
+            enhanced = self._adaptive_threshold(sharpened)
+            metadata["preprocessing_steps"].append("adaptive_threshold")
+        else:
+            # Standard CLAHE contrast enhancement
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(sharpened)
+            metadata["preprocessing_steps"].append("clahe")
+        
+        # Deskew small angles (±10°)
         enhanced, angle = self._deskew(enhanced)
         if abs(angle) > 0.5:
             metadata["preprocessing_steps"].append(f"deskew_{angle:.1f}deg")
             metadata["deskew_angle"] = angle
         
-        # Convert back to BGR for PaddleOCR (it expects color images)
+        # Convert back to BGR for EasyOCR (it accepts both but BGR is standard)
         result = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
         
         return result, metadata
+    
+    def _assess_quality(self, image: np.ndarray) -> ImageQuality:
+        """Assess image quality (blur, contrast) to guide preprocessing."""
+        # Convert to grayscale if needed
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image
+        
+        # Blur detection using Laplacian variance
+        laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+        blur_score = laplacian.var()
+        
+        # Contrast detection using standard deviation
+        contrast_score = gray.std()
+        
+        is_blurry = blur_score < self.settings.blur_threshold
+        is_low_contrast = contrast_score < self.settings.contrast_threshold
+        
+        # Generate recommendation
+        recommendation = None
+        if is_blurry and is_low_contrast:
+            recommendation = "Image is blurry and has low contrast. Please retake with better focus and lighting."
+        elif is_blurry:
+            recommendation = "Image appears blurry. Please retake with better focus or hold camera steady."
+        elif is_low_contrast:
+            recommendation = "Image has low contrast. Please ensure good lighting on the label."
+        
+        return ImageQuality(
+            blur_score=blur_score,
+            contrast_score=contrast_score,
+            is_blurry=is_blurry,
+            is_low_contrast=is_low_contrast,
+            recommendation=recommendation
+        )
+    
+    def _resize_intelligent(self, image: np.ndarray, upscale_if_small: bool = False) -> Tuple[np.ndarray, Optional[str]]:
+        """
+        Resize image intelligently:
+        - Clamp max dimension to prevent slow OCR
+        - Optionally upscale tiny images for fallback pass
+        """
+        height, width = image.shape[:2]
+        max_dim = self.settings.max_image_dimension
+        min_dim = self.settings.min_image_dimension
+        
+        # Downscale if too large
+        if max(width, height) > max_dim:
+            scale = max_dim / max(width, height)
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            resized = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+            return resized, "downscale"
+        
+        # Upscale if too small (only for fallback or explicitly requested)
+        if upscale_if_small and max(width, height) < min_dim:
+            scale = self.settings.ocr_fallback_scale
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            resized = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_CUBIC)
+            return resized, f"upscale_{scale}x"
+        
+        return image, None
+    
+    def _detect_and_crop_roi(self, image: np.ndarray) -> Tuple[np.ndarray, bool]:
+        """
+        Detect the label/text-dense region and crop to it.
+        Improves OCR by focusing on relevant area.
+        
+        Returns:
+            Tuple of (cropped image, whether ROI was applied)
+        """
+        try:
+            # Convert to grayscale
+            if len(image.shape) == 3:
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = image.copy()
+            
+            # Edge detection
+            edges = cv2.Canny(gray, 50, 150)
+            
+            # Dilate to connect text regions
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
+            dilated = cv2.dilate(edges, kernel, iterations=2)
+            
+            # Find contours
+            contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if not contours:
+                return image, False
+            
+            # Find the largest contour (likely the label)
+            largest_contour = max(contours, key=cv2.contourArea)
+            
+            # Get bounding rectangle
+            x, y, w, h = cv2.boundingRect(largest_contour)
+            
+            # Check if the ROI is significant (at least 20% of image)
+            img_area = image.shape[0] * image.shape[1]
+            roi_area = w * h
+            
+            if roi_area < 0.2 * img_area or roi_area > 0.95 * img_area:
+                # ROI too small or too similar to original, skip
+                return image, False
+            
+            # Add padding (5-10%)
+            pad_x = int(w * 0.08)
+            pad_y = int(h * 0.08)
+            
+            x1 = max(0, x - pad_x)
+            y1 = max(0, y - pad_y)
+            x2 = min(image.shape[1], x + w + pad_x)
+            y2 = min(image.shape[0], y + h + pad_y)
+            
+            cropped = image[y1:y2, x1:x2]
+            
+            # Ensure cropped region is substantial
+            if cropped.shape[0] < 100 or cropped.shape[1] < 100:
+                return image, False
+            
+            return cropped, True
+            
+        except Exception as e:
+            logger.warning(f"ROI detection failed: {e}")
+            return image, False
+    
+    def _sharpen(self, image: np.ndarray) -> np.ndarray:
+        """Apply light sharpening to enhance text edges."""
+        # Unsharp masking - gentle sharpening
+        gaussian = cv2.GaussianBlur(image, (0, 0), 2.0)
+        sharpened = cv2.addWeighted(image, 1.3, gaussian, -0.3, 0)
+        return sharpened
+    
+    def _adaptive_threshold(self, image: np.ndarray) -> np.ndarray:
+        """
+        Apply adaptive thresholding for glossy/reflective labels.
+        Better than global threshold for uneven lighting.
+        """
+        # Adaptive threshold with Gaussian weighting
+        binary = cv2.adaptiveThreshold(
+            image,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            blockSize=21,
+            C=10
+        )
+        return binary
     
     def _load_image(self, image_bytes: bytes) -> np.ndarray:
         """Load image from bytes."""
@@ -80,74 +293,134 @@ class ImagePreprocessor:
         
         return image
     
-    def _resize_if_needed(self, image: np.ndarray) -> Tuple[np.ndarray, bool]:
-        """Resize image if width exceeds maximum."""
-        height, width = image.shape[:2]
-        max_width = self.settings.max_image_width
-        
-        if width > max_width:
-            scale = max_width / width
-            new_width = max_width
-            new_height = int(height * scale)
-            resized = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
-            return resized, True
-        
-        return image, False
-    
     def _deskew(self, image: np.ndarray) -> Tuple[np.ndarray, float]:
         """
-        Detect and correct skew in image.
+        Detect and correct skew in image (±10° range).
+        Uses minAreaRect for more robust angle detection.
         
         Returns:
             Tuple of (deskewed image, detected angle in degrees)
         """
-        # Use Hough transform to detect lines
-        edges = cv2.Canny(image, 50, 150, apertureSize=3)
-        lines = cv2.HoughLinesP(
-            edges, 
-            rho=1, 
-            theta=np.pi / 180, 
-            threshold=100,
-            minLineLength=100,
-            maxLineGap=10
-        )
-        
-        if lines is None:
+        try:
+            # Use Hough transform to detect lines
+            edges = cv2.Canny(image, 50, 150, apertureSize=3)
+            lines = cv2.HoughLinesP(
+                edges, 
+                rho=1, 
+                theta=np.pi / 180, 
+                threshold=100,
+                minLineLength=100,
+                maxLineGap=10
+            )
+            
+            if lines is None:
+                # Try minAreaRect as fallback
+                return self._deskew_minarea(image)
+            
+            # Calculate angles of detected lines
+            angles = []
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                if x2 - x1 != 0:  # Avoid division by zero
+                    angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+                    # Only consider near-horizontal lines (within 45 degrees)
+                    if abs(angle) < 45:
+                        angles.append(angle)
+            
+            if not angles:
+                return self._deskew_minarea(image)
+            
+            # Use median angle to be robust to outliers
+            median_angle = np.median(angles)
+            
+            # Only correct if angle is significant but within ±10°
+            if abs(median_angle) < 0.5 or abs(median_angle) > 10:
+                return image, 0.0
+            
+            # Rotate image to correct skew
+            height, width = image.shape[:2]
+            center = (width // 2, height // 2)
+            rotation_matrix = cv2.getRotationMatrix2D(center, median_angle, 1.0)
+            rotated = cv2.warpAffine(
+                image, 
+                rotation_matrix, 
+                (width, height),
+                flags=cv2.INTER_CUBIC,
+                borderMode=cv2.BORDER_REPLICATE
+            )
+            
+            return rotated, median_angle
+            
+        except Exception as e:
+            logger.warning(f"Deskew failed: {e}")
             return image, 0.0
-        
-        # Calculate angles of detected lines
-        angles = []
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            if x2 - x1 != 0:  # Avoid division by zero
-                angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
-                # Only consider near-horizontal lines (within 45 degrees)
-                if abs(angle) < 45:
-                    angles.append(angle)
-        
-        if not angles:
+    
+    def _deskew_minarea(self, image: np.ndarray) -> Tuple[np.ndarray, float]:
+        """Fallback deskew using minAreaRect on contours."""
+        try:
+            # Find contours
+            _, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if not contours:
+                return image, 0.0
+            
+            # Combine all contours
+            all_points = np.vstack(contours)
+            
+            # Get minimum area rectangle
+            rect = cv2.minAreaRect(all_points)
+            angle = rect[2]
+            
+            # Normalize angle to [-45, 45] range
+            if angle < -45:
+                angle = 90 + angle
+            elif angle > 45:
+                angle = angle - 90
+            
+            # Only correct if within ±10°
+            if abs(angle) < 0.5 or abs(angle) > 10:
+                return image, 0.0
+            
+            height, width = image.shape[:2]
+            center = (width // 2, height // 2)
+            rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+            rotated = cv2.warpAffine(
+                image, 
+                rotation_matrix, 
+                (width, height),
+                flags=cv2.INTER_CUBIC,
+                borderMode=cv2.BORDER_REPLICATE
+            )
+            
+            return rotated, angle
+            
+        except Exception:
             return image, 0.0
-        
-        # Use median angle to be robust to outliers
-        median_angle = np.median(angles)
-        
-        # Only correct if angle is significant but not too extreme
-        if abs(median_angle) < 0.5 or abs(median_angle) > 15:
-            return image, 0.0
-        
-        # Rotate image to correct skew
-        height, width = image.shape[:2]
-        center = (width // 2, height // 2)
-        rotation_matrix = cv2.getRotationMatrix2D(center, median_angle, 1.0)
-        rotated = cv2.warpAffine(
-            image, 
-            rotation_matrix, 
-            (width, height),
-            flags=cv2.INTER_CUBIC,
-            borderMode=cv2.BORDER_REPLICATE
-        )
-        
-        return rotated, median_angle
+    
+    def rotate_image(self, image: np.ndarray, angle: int) -> np.ndarray:
+        """
+        Rotate image by fixed angle (0, 90, 180, 270).
+        Used for rotation candidate testing.
+        """
+        if angle == 0:
+            return image
+        elif angle == 90:
+            return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+        elif angle == 180:
+            return cv2.rotate(image, cv2.ROTATE_180)
+        elif angle == 270:
+            return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        else:
+            # Arbitrary angle rotation
+            height, width = image.shape[:2]
+            center = (width // 2, height // 2)
+            matrix = cv2.getRotationMatrix2D(center, -angle, 1.0)
+            return cv2.warpAffine(image, matrix, (width, height), borderMode=cv2.BORDER_REPLICATE)
+    
+    def get_rotation_candidates(self) -> List[int]:
+        """Get list of rotation angles to try."""
+        return [0, 90, 180, 270]
     
     def get_image_info(self, image_bytes: bytes) -> dict:
         """Get basic image information without full preprocessing."""
