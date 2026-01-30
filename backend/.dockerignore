@@ -1,0 +1,44 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache
+.coverage
+htmlcov
+.tox
+.nox
+.eggs
+*.egg-info
+dist
+build
+
+# Virtual environments
+venv
+.venv
+env
+.env
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Testing
+tests
+*.test.py
+conftest.py
+
+# Documentation
+*.md
+docs
+
+# OS
+.DS_Store
+Thumbs.db
