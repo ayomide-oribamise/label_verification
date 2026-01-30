@@ -100,8 +100,8 @@ resource "azurerm_container_app" "api" {
   template {
     # Container configuration
     # Note: EasyOCR/PyTorch on CPU requires significant resources
-    # - 2 vCPU minimum for ~5-6s OCR time (vs 10s on 1 vCPU)
-    # - 4Gi memory for model loading + image processing
+    # - 2 vCPU / 4Gi is max for Consumption tier (~8-10s OCR time)
+    # - For faster OCR (~5s), use Dedicated workload profile with 4 vCPU
     # - Sequential batch processing (max_workers=1) to avoid OOM
     container {
       name   = "api"
@@ -133,6 +133,27 @@ resource "azurerm_container_app" "api" {
       env {
         name  = "OCR_MAX_CONCURRENT"
         value = "1"  # Prevent concurrent OCR - CPU bound
+      }
+
+      # Thread settings for 2 vCPU (Consumption tier max)
+      env {
+        name  = "OMP_NUM_THREADS"
+        value = "2"
+      }
+
+      env {
+        name  = "MKL_NUM_THREADS"
+        value = "2"
+      }
+
+      env {
+        name  = "OPENBLAS_NUM_THREADS"
+        value = "2"
+      }
+
+      env {
+        name  = "TORCH_NUM_THREADS"
+        value = "2"
       }
 
       # Startup probe - give OCR model time to load

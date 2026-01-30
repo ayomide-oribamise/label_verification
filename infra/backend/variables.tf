@@ -35,15 +35,15 @@ variable "container_image_tag" {
 }
 
 variable "container_cpu" {
-  description = "CPU cores for container (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0)"
+  description = "CPU cores for container (Consumption tier max: 2.0)"
   type        = number
-  default     = 2.0  # Increased for EasyOCR performance (was 1.0)
+  default     = 2.0  # Max for Consumption tier (4 vCPU requires Dedicated profile)
 }
 
 variable "container_memory" {
-  description = "Memory for container (e.g., 0.5Gi, 1Gi, 2Gi, 4Gi)"
+  description = "Memory for container (Consumption tier max: 4Gi)"
   type        = string
-  default     = "4Gi"  # Increased for EasyOCR/PyTorch (was 2Gi)
+  default     = "4Gi"  # Max for Consumption tier (8Gi requires Dedicated profile)
 }
 
 variable "min_replicas" {
