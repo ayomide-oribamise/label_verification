@@ -1,0 +1,4 @@
+filename,brand_name,class_type,abv_percent,net_contents_ml,has_warning
+sample_bourbon.png,OLD TOM DISTILLERY,Kentucky Straight Bourbon Whiskey,45,750,true
+sample_beer.png,MOUNTAIN BREW CO,India Pale Ale,6.8,355,true
+sample_wine.png,SILVER OAK,Cabernet Sauvignon,14.5,750,true
