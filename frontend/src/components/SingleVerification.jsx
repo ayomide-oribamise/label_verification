@@ -5,14 +5,21 @@ import ApplicationForm from './ApplicationForm'
 import VerificationResults from './VerificationResults'
 import LoadingSpinner from './LoadingSpinner'
 
+// Import sample images
+import sampleBourbon from '../assets/sample_bourbon.png'
+import sampleBeer from '../assets/sample_beer.png'
+import sampleWine from '../assets/sample_wine.png'
+
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-// Default sample application data for quick testing
+// Default sample application data with images for quick testing
 const DEFAULT_SAMPLES = [
   {
     id: 'old-tom',
     name: 'OLD TOM DISTILLERY',
+    category: 'Bourbon',
     isDefault: true,
+    image: sampleBourbon,
     data: {
       brand_name: 'OLD TOM DISTILLERY',
       class_type: 'Kentucky Straight Bourbon Whiskey',
@@ -22,26 +29,30 @@ const DEFAULT_SAMPLES = [
     }
   },
   {
-    id: 'silver-oak',
-    name: 'SILVER OAK VINEYARDS',
+    id: 'mountain-brew',
+    name: 'MOUNTAIN BREW CO',
+    category: 'Beer',
     isDefault: true,
+    image: sampleBeer,
+    data: {
+      brand_name: 'MOUNTAIN BREW CO',
+      class_type: 'India Pale Ale',
+      abv_percent: '6.8',
+      net_contents_ml: '355',
+      has_warning: true,
+    }
+  },
+  {
+    id: 'silver-oak',
+    name: 'SILVER OAK',
+    category: 'Wine',
+    isDefault: true,
+    image: sampleWine,
     data: {
       brand_name: 'SILVER OAK',
       class_type: 'Cabernet Sauvignon',
       abv_percent: '14.5',
       net_contents_ml: '750',
-      has_warning: true,
-    }
-  },
-  {
-    id: 'mountain-brew',
-    name: 'MOUNTAIN BREW CO',
-    isDefault: true,
-    data: {
-      brand_name: 'MOUNTAIN BREW',
-      class_type: 'India Pale Ale',
-      abv_percent: '6.5',
-      net_contents_ml: '355',
       has_warning: true,
     }
   },
@@ -121,6 +132,31 @@ function SingleVerification() {
     setFormData(sample.data)
     setSelectedSample(sample.id)
     setError(null)
+  }
+
+  // Load complete sample (image + data) for quick testing
+  const loadCompleteSample = async (sample) => {
+    if (!sample.image) return
+    
+    try {
+      // Fetch the image and convert to File object
+      const response = await fetch(sample.image)
+      const blob = await response.blob()
+      const file = new File([blob], `${sample.id}.png`, { type: 'image/png' })
+      
+      setImage(file)
+      setImagePreview(sample.image)
+      setFormData(sample.data)
+      setSelectedSample(sample.id)
+      setError(null)
+      setResults(null)
+    } catch (err) {
+      console.error('Failed to load sample image:', err)
+      // Fall back to just loading the form data
+      setFormData(sample.data)
+      setSelectedSample(sample.id)
+      setError(null)
+    }
   }
 
   const saveCurrentApplication = () => {
@@ -248,6 +284,32 @@ function SingleVerification() {
 
   return (
     <div className="single-verification">
+      {/* Quick Test Section */}
+      <div className="quick-test-section">
+        <h3>🚀 Try it in less than 10 seconds</h3>
+        <p>Click a sample label to load it with pre-filled application data:</p>
+        <div className="sample-cards">
+          {DEFAULT_SAMPLES.map(sample => (
+            <button
+              key={sample.id}
+              className={`sample-card ${selectedSample === sample.id ? 'active' : ''}`}
+              onClick={() => loadCompleteSample(sample)}
+              disabled={loading}
+            >
+              <img src={sample.image} alt={sample.name} className="sample-card-image" />
+              <div className="sample-card-info">
+                <span className="sample-card-category">{sample.category}</span>
+                <span className="sample-card-name">{sample.name}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="section-divider">
+        <span>or upload your own</span>
+      </div>
+
       <div className="verification-layout">
         {/* Left side: Image upload */}
         <div className="upload-section">

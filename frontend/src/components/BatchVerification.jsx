@@ -4,32 +4,89 @@ import axios from 'axios'
 import LoadingSpinner from './LoadingSpinner'
 import BatchResults from './BatchResults'
 
+// Import sample images
+import sampleBourbon from '../assets/sample_bourbon.png'
+import sampleBeer from '../assets/sample_beer.png'
+import sampleWine from '../assets/sample_wine.png'
+
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-// Sample batch data for quick testing
-const SAMPLE_BATCH_DATA = {
-  'sample_whiskey.png': {
-    brand_name: 'OLD TOM DISTILLERY',
-    class_type: 'Kentucky Straight Bourbon Whiskey',
-    abv_percent: '45',
-    net_contents_ml: '750',
-    has_warning: true,
-  },
-  'sample_wine.png': {
-    brand_name: 'SILVER OAK',
-    class_type: 'Cabernet Sauvignon',
-    abv_percent: '14.5',
-    net_contents_ml: '750',
-    has_warning: true,
-  },
-  'sample_beer.png': {
-    brand_name: 'MOUNTAIN BREW',
-    class_type: 'India Pale Ale',
-    abv_percent: '6.5',
-    net_contents_ml: '355',
-    has_warning: true,
-  },
+// Helper: find best matching CSV row for an image filename
+const findMatchingCsvRow = (imageName, csvRows, imageIndex = -1) => {
+  if (!csvRows || csvRows.length === 0) return null
+  
+  // 1. Exact match
+  const exact = csvRows.find(row => row.filename === imageName)
+  if (exact) return exact
+  
+  // 2. Case-insensitive match
+  const lowerName = imageName.toLowerCase()
+  const caseInsensitive = csvRows.find(row => row.filename?.toLowerCase() === lowerName)
+  if (caseInsensitive) return caseInsensitive
+  
+  // 3. Partial match (CSV filename contained in image name or vice versa)
+  const partial = csvRows.find(row => {
+    if (!row.filename) return false
+    const csvLower = row.filename.toLowerCase()
+    return lowerName.includes(csvLower) || csvLower.includes(lowerName)
+  })
+  if (partial) return partial
+  
+  // 4. Match by row order (if same number of rows)
+  if (imageIndex >= 0 && imageIndex < csvRows.length) {
+    return csvRows[imageIndex]
+  }
+  
+  return null
 }
+
+// Sample batch data with images for quick testing
+const SAMPLE_LABELS = [
+  {
+    id: 'bourbon',
+    filename: 'sample_bourbon.png',
+    image: sampleBourbon,
+    category: 'Bourbon',
+    data: {
+      brand_name: 'OLD TOM DISTILLERY',
+      class_type: 'Kentucky Straight Bourbon Whiskey',
+      abv_percent: '45',
+      net_contents_ml: '750',
+      has_warning: true,
+    }
+  },
+  {
+    id: 'beer',
+    filename: 'sample_beer.png',
+    image: sampleBeer,
+    category: 'Beer',
+    data: {
+      brand_name: 'MOUNTAIN BREW CO',
+      class_type: 'India Pale Ale',
+      abv_percent: '6.8',
+      net_contents_ml: '355',
+      has_warning: true,
+    }
+  },
+  {
+    id: 'wine',
+    filename: 'sample_wine.png',
+    image: sampleWine,
+    category: 'Wine',
+    data: {
+      brand_name: 'SILVER OAK',
+      class_type: 'Cabernet Sauvignon',
+      abv_percent: '14.5',
+      net_contents_ml: '750',
+      has_warning: true,
+    }
+  },
+]
+
+// Legacy lookup for backward compatibility
+const SAMPLE_BATCH_DATA = Object.fromEntries(
+  SAMPLE_LABELS.map(s => [s.filename, s.data])
+)
 
 function BatchVerification() {
   const [images, setImages] = useState([])
@@ -58,22 +115,38 @@ function BatchVerification() {
 
     setImages(prev => [...prev, ...validFiles])
     setResults(null)
-    setCsvData(null)
+    // Don't clear csvData - keep it for matching
     
-    // Initialize empty data for new images
-    validFiles.forEach(file => {
-      setImageData(prev => ({
-        ...prev,
-        [file.name]: prev[file.name] || {
-          brand_name: '',
-          class_type: '',
-          abv_percent: '',
-          net_contents_ml: '',
-          has_warning: true,
+    // Initialize data for new images, using CSV data if available
+    setImageData(prev => {
+      const newData = { ...prev }
+      const existingCount = Object.keys(prev).length
+      validFiles.forEach((file, idx) => {
+        if (!newData[file.name]) {
+          // Try to match with existing CSV data (use index for row-order matching)
+          const csvMatch = findMatchingCsvRow(file.name, csvData, existingCount + idx)
+          if (csvMatch) {
+            newData[file.name] = {
+              brand_name: csvMatch.brand_name || '',
+              class_type: csvMatch.class_type || '',
+              abv_percent: csvMatch.abv_percent || '',
+              net_contents_ml: csvMatch.net_contents_ml || '',
+              has_warning: csvMatch.has_warning !== 'false' && csvMatch.has_warning !== false,
+            }
+          } else {
+            newData[file.name] = {
+              brand_name: '',
+              class_type: '',
+              abv_percent: '',
+              net_contents_ml: '',
+              has_warning: true,
+            }
+          }
         }
-      }))
+      })
+      return newData
     })
-  }, [])
+  }, [csvData])
 
   const { getRootProps: getImageRootProps, getInputProps: getImageInputProps, isDragActive: isImageDragActive } = useDropzone({
     onDrop: onDropImages,
@@ -100,10 +173,27 @@ function BatchVerification() {
           const parsed = parseCSV(text)
           setCsvData(parsed)
           
-          // Update imageData with CSV values
+          // Update imageData with CSV values using fuzzy matching
           const newImageData = { ...imageData }
+          
+          // For each uploaded image, try to find matching CSV row
+          // Use index for row-order matching when names don't match
+          images.forEach((img, index) => {
+            const csvMatch = findMatchingCsvRow(img.name, parsed, index)
+            if (csvMatch) {
+              newImageData[img.name] = {
+                brand_name: csvMatch.brand_name || '',
+                class_type: csvMatch.class_type || '',
+                abv_percent: csvMatch.abv_percent || '',
+                net_contents_ml: csvMatch.net_contents_ml || '',
+                has_warning: csvMatch.has_warning !== 'false' && csvMatch.has_warning !== false,
+              }
+            }
+          })
+          
+          // Also store CSV data keyed by original filename (for future image uploads)
           parsed.forEach(row => {
-            if (row.filename) {
+            if (row.filename && !newImageData[row.filename]) {
               newImageData[row.filename] = {
                 brand_name: row.brand_name || '',
                 class_type: row.class_type || '',
@@ -113,14 +203,21 @@ function BatchVerification() {
               }
             }
           })
+          
           setImageData(newImageData)
+          
+          // Show how many images were matched
+          const matchedCount = images.filter(img => findMatchingCsvRow(img.name, parsed)).length
+          if (images.length > 0 && matchedCount > 0) {
+            console.log(`CSV matched ${matchedCount}/${images.length} images`)
+          }
         } catch (err) {
           setError('Failed to parse CSV file. Please check the format.')
         }
       }
       reader.readAsText(file)
     }
-  }, [imageData])
+  }, [imageData, images])
 
   const { getRootProps: getCsvRootProps, getInputProps: getCsvInputProps, isDragActive: isCsvDragActive } = useDropzone({
     onDrop: onDropCSV,
@@ -303,6 +400,31 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,true`
     setMode('upload')
   }
 
+  // Load all sample labels for quick batch testing
+  const loadAllSamples = async () => {
+    try {
+      const sampleFiles = []
+      const sampleData = {}
+      
+      for (const sample of SAMPLE_LABELS) {
+        // Fetch the image and convert to File object
+        const response = await fetch(sample.image)
+        const blob = await response.blob()
+        const file = new File([blob], sample.filename, { type: 'image/png' })
+        sampleFiles.push(file)
+        sampleData[sample.filename] = sample.data
+      }
+      
+      setImages(sampleFiles)
+      setImageData(sampleData)
+      setResults(null)
+      setError(null)
+    } catch (err) {
+      console.error('Failed to load sample images:', err)
+      setError('Failed to load sample images. Please try again.')
+    }
+  }
+
   const allImagesHaveData = images.every(img => imageData[img.name]?.brand_name)
 
   return (
@@ -310,6 +432,35 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,true`
       <div className="batch-info">
         <h2>Batch Verification</h2>
         <p>Upload multiple label images and provide application data for each.</p>
+      </div>
+
+      {/* Quick Test Section */}
+      <div className="quick-test-section">
+        <h3>🚀 Try Batch Verification in less than 10 seconds</h3>
+        <p>Load all 3 sample labels with pre-filled application data:</p>
+        <div className="sample-cards">
+          {SAMPLE_LABELS.map(sample => (
+            <div key={sample.id} className="sample-card-preview">
+              <img src={sample.image} alt={sample.data.brand_name} className="sample-card-image" />
+              <div className="sample-card-info">
+                <span className="sample-card-category">{sample.category}</span>
+                <span className="sample-card-name">{sample.data.brand_name}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        <button 
+          className="btn btn-primary" 
+          onClick={loadAllSamples}
+          disabled={loading}
+          style={{ marginTop: '1rem' }}
+        >
+          📦 Load All Sample Labels
+        </button>
+      </div>
+
+      <div className="section-divider">
+        <span>or upload your own</span>
       </div>
 
       {/* Step 1: Upload Images */}
