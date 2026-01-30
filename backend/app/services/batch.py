@@ -519,14 +519,10 @@ class SequentialBatchProcessor:
                 # Preprocess
                 processed_image, preprocessing_meta = preprocessor.preprocess(image_bytes)
                 
-                # OCR with fallback for better accuracy
-                ocr_result, ocr_metrics = ocr_service.process_with_fallback(
-                    processed_image,
-                    preprocessor=preprocessor,
-                    image_bytes=image_bytes
-                )
+                # Field-targeted OCR (semantic zone processing for beer/wine accuracy)
+                field_ocr_result, ocr_result = ocr_service.process_field_targeted(processed_image)
                 
-                if not ocr_result.boxes:
+                if not ocr_result.boxes and not field_ocr_result.combined_raw_text:
                     # Include quality recommendation if available
                     quality_rec = preprocessing_meta.get("quality_recommendation", "")
                     error_msg = "Unable to extract text from image"
@@ -540,8 +536,8 @@ class SequentialBatchProcessor:
                     })
                     continue
                 
-                # Extract fields
-                extraction_result = field_extractor.extract_all(ocr_result)
+                # Extract fields using zone-specific text
+                extraction_result = field_extractor.extract_all_field_targeted(field_ocr_result, ocr_result)
                 
                 # Verify
                 verification_result = verification_service.verify(

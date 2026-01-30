@@ -129,17 +129,14 @@ async def verify_label(
         if preprocessing_meta.get("quality", {}).get("is_low_contrast"):
             logger.warning("Image detected as low contrast")
         
-        # Stage 2: Run OCR with fallback strategies for better accuracy
+        # Stage 2: Run field-targeted OCR (semantic zone processing)
+        # This is KEY for beer/wine accuracy - process 5 small zones instead of full image
         ocr_start = time.time()
-        ocr_result, ocr_metrics = ocr_service.process_with_fallback(
-            processed_image,
-            preprocessor=preprocessor,
-            image_bytes=image_bytes
-        )
+        field_ocr_result, ocr_result = ocr_service.process_field_targeted(processed_image)
         ocr_ms = int((time.time() - ocr_start) * 1000)
-        logger.info(f"OCR completed ({ocr_ms}ms)")
+        logger.info(f"Field-targeted OCR completed ({ocr_ms}ms, {field_ocr_result.zones_processed} zones)")
         
-        if not ocr_result.boxes:
+        if not ocr_result.boxes and not field_ocr_result.combined_raw_text:
             # Include quality recommendation if available
             quality_rec = preprocessing_meta.get("quality_recommendation", "")
             error_msg = "Unable to extract text from image. Please upload a clearer label."
@@ -150,9 +147,9 @@ async def verify_label(
                 error=error_msg
             )
         
-        # Stage 3: Extract fields from OCR result
+        # Stage 3: Extract fields using zone-specific text
         extract_start = time.time()
-        extraction_result = field_extractor.extract_all(ocr_result)
+        extraction_result = field_extractor.extract_all_field_targeted(field_ocr_result, ocr_result)
         extract_ms = int((time.time() - extract_start) * 1000)
         
         # Build extracted fields response

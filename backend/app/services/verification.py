@@ -144,18 +144,40 @@ class VerificationService:
         expected: str
     ) -> FieldVerification:
         """
-        Verify brand name using token-set similarity (order-insensitive).
+        Verify brand name using token-set similarity + CANDIDATE RESCORING.
         
         This handles cases like:
         - "TOM OLD DISTILLERY" vs "OLD TOM DISTILLERY" (word order swap)
         - "OLD TOM" vs "OLD TOM DISTILLERY" (partial match)
+        - OCR garbling: "[BREW 091" vs "MOUNTAIN BREW CO" (rescore candidates)
+        
+        If initial score is low, RESCORE all candidates against expected
+        to find the best match (robust to OCR garbling).
         
         Thresholds:
-        - >= 0.85: Match (token overlap is strong)
-        - 0.70-0.84: Review (likely match)
+        - >= 0.85: Match
+        - 0.70-0.84: Review
         - < 0.70: Mismatch
         """
+        # Import the candidate scoring function
+        from .extraction import pick_best_brand_candidate
+        
         if not extracted.value:
+            # If no value but we have candidates, try to find best match
+            if hasattr(extracted, 'candidates') and extracted.candidates:
+                best, score, reason = pick_best_brand_candidate(extracted.candidates, expected)
+                if best and score >= 0.70:
+                    logger.info(f"Brand rescued from candidates: '{best}' (score={score:.2f})")
+                    return FieldVerification(
+                        field_name="Brand Name",
+                        status=VerificationStatus.REVIEW if score < 0.85 else VerificationStatus.MATCH,
+                        extracted_value=best,
+                        expected_value=expected,
+                        confidence=score,
+                        message="Brand name found via candidate matching",
+                        details=f"Best match from {len(extracted.candidates)} candidates ({reason})"
+                    )
+            
             return FieldVerification(
                 field_name="Brand Name",
                 status=VerificationStatus.NOT_FOUND,
@@ -171,7 +193,6 @@ class VerificationService:
         expected_norm = self._normalize_brand(expected)
         
         # Core token overlap (ignores DISTILLERY, BREWING, etc.)
-        # Calculate this first as it gates partial_ratio usage
         core_score = self._core_brand_similarity(extracted.value, expected)
         
         # Primary similarity methods - token-based, order-insensitive
@@ -181,18 +202,29 @@ class VerificationService:
         score = max(ts, tso, core_score)
         
         # Only allow partial_ratio to influence score if core token overlap exists
-        # This prevents "substring wins" false positives (e.g., "TOM" matching "OLD TOM")
         if core_score >= 0.5:
             pr = fuzz.partial_ratio(extracted_norm, expected_norm) / 100.0
             score = max(score, pr)
         
-        logger.debug(f"Brand comparison: '{extracted.value}' vs '{expected}' -> score={score:.2f}")
+        # CANDIDATE RESCORING: If score is low, search ALL candidates for better match
+        # This is the KEY fix for OCR garbling like "[BREW 091" vs "MOUNTAIN BREW CO"
+        best_candidate = extracted.value
+        if score < self.settings.brand_match_threshold:
+            if hasattr(extracted, 'candidates') and extracted.candidates:
+                best, rescore, reason = pick_best_brand_candidate(extracted.candidates, expected)
+                if best and rescore > score:
+                    logger.info(f"Brand improved via rescore: '{extracted.value}' -> '{best}' "
+                               f"(score {score:.2f} -> {rescore:.2f}, {reason})")
+                    best_candidate = best
+                    score = rescore
+        
+        logger.debug(f"Brand comparison: '{best_candidate}' vs '{expected}' -> score={score:.2f}")
         
         if score >= self.settings.brand_match_threshold:
             return FieldVerification(
                 field_name="Brand Name",
                 status=VerificationStatus.MATCH,
-                extracted_value=extracted.value,
+                extracted_value=best_candidate,
                 expected_value=expected,
                 confidence=score,
                 message="Brand name matches",
@@ -202,22 +234,22 @@ class VerificationService:
             return FieldVerification(
                 field_name="Brand Name",
                 status=VerificationStatus.REVIEW,
-                extracted_value=extracted.value,
+                extracted_value=best_candidate,
                 expected_value=expected,
                 confidence=score,
                 message="Brand name likely matches - review recommended",
-                details=f"'{extracted.value}' vs '{expected}' - similarity {score:.0%}. "
+                details=f"'{best_candidate}' vs '{expected}' - similarity {score:.0%}. "
                         "May be a case/punctuation difference."
             )
         else:
             return FieldVerification(
                 field_name="Brand Name",
                 status=VerificationStatus.MISMATCH,
-                extracted_value=extracted.value,
+                extracted_value=best_candidate,
                 expected_value=expected,
                 confidence=score,
                 message="Brand name does not match",
-                details=f"Label shows '{extracted.value}' but application states '{expected}'. "
+                details=f"Label shows '{best_candidate}' but application states '{expected}'. "
                         f"Similarity: {score:.0%}"
             )
     
@@ -435,7 +467,7 @@ class VerificationService:
         expected: str
     ) -> FieldVerification:
         """
-        Verify class/type using semantic beverage classification.
+        Verify class/type using semantic classification + CANDIDATE RESCORING.
         
         Maps both extracted and expected to canonical forms, then compares.
         This handles:
@@ -443,8 +475,42 @@ class VerificationService:
         - "Kentucky Straight Bourbon Whiskey" matches "Bourbon"
         - "Cognac" matches "Brandy"
         - "Champagne" matches "Sparkling Wine"
+        - OCR garbling: rescore candidates to find best match
         """
+        # Import the candidate scoring function
+        from .extraction import pick_best_class_type_candidate
+        
         if not extracted.value:
+            # If no value but we have candidates, try to find best match
+            if hasattr(extracted, 'candidates') and extracted.candidates:
+                best, score, reason = pick_best_class_type_candidate(extracted.candidates, expected)
+                if best and score >= 0.60:
+                    logger.info(f"Class/type rescued from candidates: '{best}' (score={score:.2f})")
+                    # Check if this matches expected canonically
+                    best_canonical = self._get_canonical_class(best)
+                    expected_canonical = self._get_canonical_class(expected)
+                    
+                    if best_canonical and expected_canonical and best_canonical == expected_canonical:
+                        return FieldVerification(
+                            field_name="Class/Type",
+                            status=VerificationStatus.MATCH,
+                            extracted_value=best,
+                            expected_value=expected,
+                            confidence=1.0,
+                            message="Class/type matches",
+                            details=f"Semantic match: both are '{best_canonical}' (found via candidate search)"
+                        )
+                    
+                    return FieldVerification(
+                        field_name="Class/Type",
+                        status=VerificationStatus.REVIEW if score < 0.80 else VerificationStatus.MATCH,
+                        extracted_value=best,
+                        expected_value=expected,
+                        confidence=score,
+                        message="Class/type found via candidate matching",
+                        details=f"Best match from {len(extracted.candidates)} candidates ({reason})"
+                    )
+            
             return FieldVerification(
                 field_name="Class/Type",
                 status=VerificationStatus.NOT_FOUND,
@@ -568,6 +634,10 @@ class VerificationService:
         """
         Verify ABV with numeric comparison.
         
+        Includes post-processor for common OCR errors:
+        - "68" vs "6.8" (missing decimal point)
+        - "680" vs "6.8" (OCR reads extra digit)
+        
         Tolerance: ±0.5% to account for rounding differences.
         """
         if not extracted.value:
@@ -594,6 +664,13 @@ class VerificationService:
                 details=f"Extracted '{extracted.value}' could not be parsed as number."
             )
         
+        # ABV POST-PROCESSOR: Fix common OCR decimal errors
+        # "68" vs "6.8" is extremely common on beer labels
+        corrected_value = self._correct_abv_decimal(extracted_value, expected)
+        if corrected_value != extracted_value:
+            logger.info(f"ABV corrected: {extracted_value}% -> {corrected_value}% (expected {expected}%)")
+            extracted_value = corrected_value
+        
         difference = abs(extracted_value - expected)
         tolerance = self.settings.abv_tolerance
         
@@ -618,6 +695,54 @@ class VerificationService:
                 details=f"Label shows {extracted_value}% but application states {expected}%. "
                         f"Difference: {difference}% (tolerance: ±{tolerance}%)"
             )
+    
+    def _correct_abv_decimal(self, extracted: float, expected: float) -> float:
+        """
+        Post-processor to fix common ABV OCR errors.
+        
+        Pattern: OCR reads "68" instead of "6.8" (missing decimal)
+        
+        Rule (per engineer):
+        If extracted >= 20% and expected < 20%:
+            try dividing by 10 and by 100
+            pick the one closer to expected
+        
+        This is SAFE because:
+        - Real ABV > 20% is rare (some spirits, but they're >40%)
+        - Beer/wine is always < 20%
+        - If extracted is 68 and expected is 6.8, division by 10 gives exact match
+        
+        Examples:
+        - 68 -> 6.8 (÷10) when expected is 6.8 ✓
+        - 680 -> 6.8 (÷100) when expected is 6.8 ✓
+        - 45 -> 45 (no change) when expected is 45 (spirits) ✓
+        - 12 -> 12 (no change) when expected is 12 (wine) ✓
+        """
+        # Only apply correction in suspicious range
+        if extracted < 20 or expected >= 20:
+            return extracted
+        
+        # Try both corrections
+        div_10 = extracted / 10
+        div_100 = extracted / 100
+        
+        # Pick the one closest to expected
+        diff_original = abs(extracted - expected)
+        diff_10 = abs(div_10 - expected)
+        diff_100 = abs(div_100 - expected)
+        
+        # Only correct if it's a significant improvement
+        tolerance = self.settings.abv_tolerance
+        
+        if diff_10 <= tolerance and diff_10 < diff_original:
+            logger.debug(f"ABV decimal correction: {extracted} -> {div_10} (÷10)")
+            return div_10
+        
+        if diff_100 <= tolerance and diff_100 < diff_original:
+            logger.debug(f"ABV decimal correction: {extracted} -> {div_100} (÷100)")
+            return div_100
+        
+        return extracted
     
     def _verify_net_contents(
         self,
