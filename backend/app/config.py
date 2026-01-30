@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     ocr_confidence_threshold: float = 0.30  # Lower threshold = fewer fallbacks
     ocr_min_token_count: int = 2  # Fewer tokens triggers fallback
     ocr_fallback_scale: float = 1.5  # Scale factor for fallback pass
-    ocr_max_concurrent: int = 2  # Max concurrent OCR operations
+    ocr_max_concurrent: int = 1  # Single OCR at a time (CPU-bound, no benefit from concurrency)
     
     # Image quality thresholds
     blur_threshold: float = 50.0  # Lowered - only trigger on very blurry
@@ -48,9 +48,9 @@ class Settings(BaseSettings):
     brand_review_threshold: float = 0.65  # Send to review if partial match
     abv_tolerance: float = 0.5
     
-    # Batch processing
-    max_batch_size: int = 300
-    max_workers: int = 4
+    # Batch processing (sequential recommended on 2 vCPU)
+    max_batch_size: int = 50  # Reasonable limit for sequential processing
+    max_workers: int = 1  # Sequential: avoids 2x model load + OOM on limited memory
     max_total_pixels_per_batch: int = 50_000_000  # ~50MP total per batch
     
     class Config:

@@ -182,6 +182,8 @@ class FieldExtractor:
         # Strategy 2: Extract from top portion of text (before beverage keywords)
         brand = self._extract_brand_before_keywords(raw_text)
         if brand:
+            # RESCUE: If we got a short brand but raw_text has suffix-extended version, use it
+            brand = self._rescue_short_brand(brand, raw_text)
             src_boxes = self._boxes_for_phrase(boxes, brand)
             return ExtractedField(
                 value=brand,
@@ -195,6 +197,9 @@ class FieldExtractor:
         if boxes:
             brand, src_boxes = self._extract_brand_spatial(boxes)
             if brand:
+                # RESCUE: If we got a short brand but raw_text has suffix-extended version, use it
+                brand = self._rescue_short_brand(brand, raw_text)
+                src_boxes = self._boxes_for_phrase(boxes, brand)
                 return ExtractedField(
                     value=brand,
                     confidence=0.75,
@@ -205,6 +210,10 @@ class FieldExtractor:
         
         # Fallback: First meaningful tokens (filter stop/fluff)
         brand, src_boxes = self._extract_brand_fallback(raw_text, boxes)
+        if brand:
+            # RESCUE: If we got a short brand but raw_text has suffix-extended version, use it
+            brand = self._rescue_short_brand(brand, raw_text)
+            src_boxes = self._boxes_for_phrase(boxes, brand)
         return ExtractedField(
             value=brand,
             confidence=0.5,
@@ -293,27 +302,79 @@ class FieldExtractor:
         
         Example: "TOM OLD DISTILLERY" from "TOM OLD DISTILLERY Premium Small Batch..."
         
-        Validates result to avoid false positives like "BOURBON SPIRITS".
+        Uses finditer + scoring to pick the BEST match, not just the first.
+        Prefers: longer phrases, earlier in text, DISTILLERY/BREWING over CO/LLC.
         """
         # Normalize text
         text = re.sub(r"\s+", " ", raw_text.upper()).strip()
         
-        # Pattern: 1-5 words followed by producer keyword
-        # Matches: "OLD TOM DISTILLERY", "JACK DANIEL'S DISTILLERY", etc.
-        pattern = rf"\b([A-Z0-9'&\-]{{2,}}(?:\s+[A-Z0-9'&\-]{{2,}}){{0,4}}\s+{BRAND_SUFFIX_PATTERN})\b"
+        # Pattern: 1-6 words followed by producer keyword (increased from 0,4 to 0,6)
+        # Matches: "OLD TOM DISTILLERY", "THE SOMETHING SOMETHING DISTILLERY", etc.
+        pattern = rf"\b([A-Z0-9'&\-]{{2,}}(?:\s+[A-Z0-9'&\-]{{2,}}){{0,6}}\s+{BRAND_SUFFIX_PATTERN})\b"
         
-        # Find all matches and pick the best one
-        for match in re.finditer(pattern, text):
-            brand = match.group(1).strip()
+        # Find ALL matches
+        matches = list(re.finditer(pattern, text))
+        if not matches:
+            return None
+        
+        # Score each match: prefer longer phrases, earlier position, strong suffixes
+        STRONG_SUFFIXES = {"DISTILLERY", "DISTILLING", "BREWING", "BREWERY", "WINERY"}
+        
+        def score_match(m: re.Match) -> tuple:
+            phrase = m.group(1).strip()
+            tokens = phrase.split()
+            last_token = tokens[-1] if tokens else ""
             
-            # Validate: must be plausible brand (not beverage type or fluff)
+            # Scoring tuple (higher is better):
+            # 1. Number of tokens (prefer longer)
+            # 2. Phrase length (prefer longer)
+            # 3. Strong suffix bonus (DISTILLERY > CO)
+            # 4. Earlier position (negative start = prefer earlier)
+            strong_suffix_bonus = 1 if last_token in STRONG_SUFFIXES else 0
+            return (len(tokens), len(phrase), strong_suffix_bonus, -m.start())
+        
+        # Filter to plausible brands and pick the best
+        valid_matches = []
+        for match in matches:
+            brand = match.group(1).strip()
             if self._is_plausible_brand(brand):
-                logger.debug(f"Found brand with suffix: {brand}")
-                return brand
+                valid_matches.append((match, brand))
             else:
                 logger.debug(f"Rejected implausible brand: {brand}")
         
-        return None
+        if not valid_matches:
+            return None
+        
+        # Pick the best match by score
+        best_match, best_brand = max(valid_matches, key=lambda x: score_match(x[0]))
+        logger.debug(f"Found brand with suffix: {best_brand} (from {len(valid_matches)} candidates)")
+        return best_brand
+    
+    def _rescue_short_brand(self, brand: str, raw_text: str) -> str:
+        """
+        Rescue: if we extracted a short brand but raw_text contains suffix-extended version, use it.
+        
+        Example: "TOM OLD" -> "TOM OLD DISTILLERY" if raw_text contains the full phrase.
+        
+        This prevents the "first run fails" issue where extraction picks a truncated brand.
+        """
+        if not brand or len(brand.split()) > 3:
+            # Already long enough, don't rescue
+            return brand
+        
+        # Try to find suffix-extended version in raw_text
+        upgraded = self._extract_brand_with_suffix(raw_text)
+        
+        if upgraded:
+            brand_upper = brand.upper()
+            upgraded_upper = upgraded.upper()
+            
+            # Check if our short brand is contained in the upgraded version
+            if brand_upper in upgraded_upper:
+                logger.debug(f"Brand rescue: '{brand}' -> '{upgraded}'")
+                return upgraded
+        
+        return brand
     
     def _extract_brand_before_keywords(self, raw_text: str) -> Optional[str]:
         """

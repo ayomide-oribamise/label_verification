@@ -141,11 +141,15 @@ class OCRService:
             try:
                 import easyocr
                 import torch
+                import os
                 
-                # Set thread limits for CPU inference (prevents thread explosion)
-                torch.set_num_threads(1)
+                # Set thread limits for CPU inference
+                # Use available CPUs (from env or cpu_count), but cap at reasonable limit
+                num_threads = int(os.environ.get('TORCH_NUM_THREADS', min(4, os.cpu_count() or 2)))
+                torch.set_num_threads(num_threads)
+                torch.set_num_interop_threads(1)  # Keep interop threads low
                 
-                logger.info("Initializing EasyOCR engine...")
+                logger.info(f"Initializing EasyOCR engine with {num_threads} threads...")
                 
                 # EasyOCR with English language, CPU mode
                 model_dir = os.environ.get('EASYOCR_MODULE_PATH', '/home/app/.EasyOCR/model')
@@ -179,11 +183,9 @@ class OCRService:
         image_bytes: Optional[bytes] = None
     ) -> Tuple[OCRResult, OCRHealthMetrics]:
         """
-        Run OCR with region-based processing for speed.
+        Run OCR with confidence gating and fallback strategies.
         
-        Strategy:
-        1. Try fast region-based OCR first (top + bottom regions)
-        2. Only fall back to full-image OCR if fields missing
+        Single readtext() call (region OCR was slower due to 3x detection passes).
         
         Args:
             image: Preprocessed image as numpy array
@@ -197,20 +199,8 @@ class OCRService:
         fallback_used = False
         rotation_used = 0
         
-        # Try fast region-based OCR first
-        result = self._process_regions(image)
-        
-        # Check if we got enough content
-        has_enough_content = (
-            result.average_confidence >= self.settings.ocr_confidence_threshold and
-            len(result.boxes) >= self.settings.ocr_min_token_count
-        )
-        
-        # If region-based failed, fall back to full image
-        if not has_enough_content:
-            logger.info(f"Region OCR insufficient (conf={result.average_confidence:.2f}, tokens={len(result.boxes)}), trying full image...")
-            result = self._process_single(image)
-            fallback_used = True
+        # Single OCR pass on full image (fastest approach)
+        result = self._process_single(image)
         
         # Check if we need fallback
         needs_fallback = (
@@ -382,115 +372,6 @@ class OCRService:
                 traceback.print_exc()
                 return OCRResult.empty()
     
-    def _process_regions(self, image: np.ndarray) -> OCRResult:
-        """
-        Run OCR on strategic regions instead of full image.
-        
-        Much faster than full-image OCR because:
-        - Fewer pixels to process
-        - Targeted regions for each field type
-        
-        Regions:
-        - Top 45%: Brand name, class/type
-        - Middle 40%: ABV, net contents (with allowlist for speed)
-        - Bottom 40%: Government warning
-        """
-        h, w = image.shape[:2]
-        
-        all_boxes = []
-        
-        # Region 1: Top 45% for brand and class (most important)
-        top_region = image[0:int(h * 0.45), :]
-        top_result = self._process_single(top_region)
-        
-        # Offset boxes to original image coordinates
-        for box in top_result.boxes:
-            all_boxes.append(box)  # Y offset is 0 for top region
-        
-        # Region 2: Middle region for ABV with allowlist (fast)
-        mid_start = int(h * 0.30)
-        mid_end = int(h * 0.70)
-        mid_region = image[mid_start:mid_end, :]
-        mid_result = self._process_single(mid_region, allowlist="0123456789.%ABVabvPROOFproof ")
-        
-        # Offset boxes
-        for box in mid_result.boxes:
-            # Adjust Y coordinates
-            adjusted_bbox = [
-                [p[0], p[1] + mid_start] for p in box.bbox
-            ]
-            all_boxes.append(OCRBox(
-                text=box.text,
-                confidence=box.confidence,
-                bbox=adjusted_bbox
-            ))
-        
-        # Region 3: Bottom 40% for warning and net contents
-        bottom_start = int(h * 0.55)
-        bottom_region = image[bottom_start:, :]
-        bottom_result = self._process_single(bottom_region)
-        
-        # Offset boxes
-        for box in bottom_result.boxes:
-            adjusted_bbox = [
-                [p[0], p[1] + bottom_start] for p in box.bbox
-            ]
-            all_boxes.append(OCRBox(
-                text=box.text,
-                confidence=box.confidence,
-                bbox=adjusted_bbox
-            ))
-        
-        # Deduplicate overlapping boxes (regions overlap)
-        all_boxes = self._deduplicate_boxes(all_boxes)
-        
-        # Calculate overall metrics
-        if all_boxes:
-            avg_confidence = sum(b.confidence for b in all_boxes) / len(all_boxes)
-            # Sort and build raw text
-            line_h = int(np.median([b.height for b in all_boxes])) if all_boxes else 20
-            line_h = max(12, min(line_h, 60))
-            sorted_boxes = sorted(all_boxes, key=lambda b: (b.top // line_h, b.left))
-            raw_text = " ".join(b.text for b in sorted_boxes)
-        else:
-            avg_confidence = 0.0
-            raw_text = ""
-        
-        logger.debug(f"Region OCR: {len(all_boxes)} boxes, conf={avg_confidence:.2f}")
-        
-        return OCRResult(
-            boxes=all_boxes,
-            raw_text=raw_text,
-            average_confidence=avg_confidence
-        )
-    
-    def _deduplicate_boxes(self, boxes: List[OCRBox]) -> List[OCRBox]:
-        """Remove duplicate boxes from overlapping regions."""
-        if len(boxes) <= 1:
-            return boxes
-        
-        # Sort by confidence (keep higher confidence duplicates)
-        sorted_boxes = sorted(boxes, key=lambda b: b.confidence, reverse=True)
-        
-        kept = []
-        for box in sorted_boxes:
-            is_duplicate = False
-            for kept_box in kept:
-                # Check if boxes overlap significantly (same text, close position)
-                if box.text.upper() == kept_box.text.upper():
-                    # Check Y overlap
-                    y_overlap = (
-                        min(box.bottom, kept_box.bottom) - max(box.top, kept_box.top)
-                    ) > min(box.height, kept_box.height) * 0.5
-                    
-                    if y_overlap:
-                        is_duplicate = True
-                        break
-            
-            if not is_duplicate:
-                kept.append(box)
-        
-        return kept
     
     def process(self, image: np.ndarray) -> OCRResult:
         """

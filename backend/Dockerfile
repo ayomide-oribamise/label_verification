@@ -25,21 +25,18 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
 # Production stage
 FROM python:3.11-slim
 
-# Thread control for CPU inference - prevents thread explosion
-# Critical for EasyOCR/PyTorch performance on CPU
+# Thread control for CPU inference
+# These are defaults - override via Container App env vars for different CPU configs
+# For 4 vCPU: set OMP_NUM_THREADS=4, MKL_NUM_THREADS=4, TORCH_NUM_THREADS=4
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     EASYOCR_MODULE_PATH=/home/app/.EasyOCR \
-    # Limit threads for OpenMP (used by numpy, opencv)
-    OMP_NUM_THREADS=1 \
-    # Limit threads for Intel MKL (used by numpy, scipy)
-    MKL_NUM_THREADS=1 \
-    # Limit threads for OpenBLAS
-    OPENBLAS_NUM_THREADS=1 \
-    # Limit threads for BLIS
-    BLIS_NUM_THREADS=1 \
-    # PyTorch thread settings
-    TORCH_NUM_THREADS=1 \
+    # Thread settings - defaults for 2 vCPU, override for 4 vCPU
+    OMP_NUM_THREADS=2 \
+    MKL_NUM_THREADS=2 \
+    OPENBLAS_NUM_THREADS=2 \
+    BLIS_NUM_THREADS=2 \
+    TORCH_NUM_THREADS=2 \
     # Disable GPU for PyTorch
     CUDA_VISIBLE_DEVICES="" \
     # Reduce memory fragmentation
