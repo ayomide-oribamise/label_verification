@@ -14,13 +14,15 @@ class Settings(BaseSettings):
     # CORS - Allow all origins for prototype (restrict in production)
     cors_origins: list[str] = ["*"]
     
-    # Image processing limits (AGGRESSIVE tuning for speed)
-    # OCR cost scales ~quadratically with pixels - smaller = much faster
-    max_image_size_mb: int = 3
-    max_image_width: int = 1024  # Aggressive: was 1200
-    max_image_dimension: int = 1024  # Aggressive: target <5s OCR
+    # Image processing limits
+    # Allow large uploads (PNG can be 7MB+), but convert to JPEG before processing
+    max_upload_size_mb: int = 15  # Allow large PNG uploads
+    max_converted_size_mb: float = 3.0  # After JPEG conversion, must be under this
+    max_image_width: int = 2000  # Max dimension before conversion
+    max_image_dimension: int = 1024  # Max dimension for OCR processing
     min_image_dimension: int = 300  # Below this, upscale for OCR
     allowed_extensions: set = {"png", "jpg", "jpeg", "webp"}
+    jpeg_quality: int = 82  # JPEG quality for conversion (80-85 optimal for OCR)
     
     # OCR settings
     ocr_lang: str = "en"

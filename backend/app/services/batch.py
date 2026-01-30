@@ -486,13 +486,32 @@ class SequentialBatchProcessor:
             image_bytes = images[filename]
             
             try:
-                # Validate image
+                # Validate image (upload size check)
                 is_valid, error_msg = preprocessor.validate_image(image_bytes, filename)
                 if not is_valid:
                     results.append({
                         "filename": filename,
                         "success": False,
                         "error": error_msg,
+                        "result": None
+                    })
+                    continue
+                
+                # Convert ALL formats to OCR-friendly JPEG (critical for performance)
+                from .preprocessing import convert_to_ocr_friendly
+                try:
+                    image_bytes, conversion_meta = convert_to_ocr_friendly(
+                        image_bytes,
+                        max_dim=self.settings.max_image_width,
+                        jpeg_quality=self.settings.jpeg_quality,
+                        max_output_mb=self.settings.max_converted_size_mb
+                    )
+                    logger.debug(f"[{filename}] Converted: {conversion_meta['compression_ratio']:.1f}x")
+                except ValueError as e:
+                    results.append({
+                        "filename": filename,
+                        "success": False,
+                        "error": str(e),
                         "result": None
                     })
                     continue
