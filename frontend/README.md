@@ -1,65 +1,66 @@
 # Label Verification Frontend
 
-React frontend for the AI-powered alcohol label verification tool.
+React frontend for the AI-powered alcohol label verification application.
 
 ## Quick Start
 
-### Prerequisites
-
-- Node.js 18+
-- npm or yarn
-
-### Development
-
-1. Install dependencies:
 ```bash
+# Install dependencies
 npm install
-```
 
-2. Copy environment file:
-```bash
+# Copy environment template
 cp .env.example .env
+
+# Start development server
+npm run dev
 ```
 
-3. Update `.env` with your backend URL:
+Open http://localhost:5173
+
+## Configuration
+
+Create a `.env` file with:
+
 ```
 VITE_API_URL=http://localhost:8000
 ```
 
-4. Start development server:
-```bash
-npm run dev
-```
+For production, set this to the deployed backend URL.
 
-5. Open http://localhost:5173
-
-### Building for Production
+## Build
 
 ```bash
+# Production build
 npm run build
-```
 
-Output will be in the `dist/` folder.
-
-### Preview Production Build
-
-```bash
+# Preview build locally
 npm run preview
 ```
+
+Output is in the `dist/` folder.
 
 ## Features
 
 ### Single Label Verification
 - Drag-and-drop image upload
-- Form fields for application data
+- Load sample labels for quick testing
+- Application data form with validation
 - Real-time verification results
-- Field-by-field status display
+- Field-by-field status display (match/review/mismatch)
 
 ### Batch Verification
 - Multiple image upload
-- CSV file with application data
-- Parallel processing
+- CSV file upload with application data
+- Auto-matching of images to CSV rows by filename
+- Download CSV template with uploaded filenames
+- Progress tracking and results summary
 - Export results to CSV
+
+### Sample Data
+Pre-loaded sample labels and application data for demonstration:
+- Bourbon (Old Tom Distillery)
+- Wine (Silver Oak Cabernet Sauvignon)  
+- Beer (Mountain Brew Co IPA)
 
 ## Project Structure
 
@@ -67,44 +68,47 @@ npm run preview
 frontend/
 ├── src/
 │   ├── components/
-│   │   ├── SingleVerification.jsx  # Single label mode
-│   │   ├── BatchVerification.jsx   # Batch mode
-│   │   ├── ApplicationForm.jsx     # Form fields
-│   │   ├── VerificationResults.jsx # Single results
-│   │   ├── BatchResults.jsx        # Batch results
-│   │   └── LoadingSpinner.jsx      # Loading indicator
-│   ├── App.jsx                     # Main app
-│   ├── App.css                     # Styles
-│   ├── main.jsx                    # Entry point
-│   └── index.css                   # Reset styles
-├── .env.example                    # Environment template
-├── package.json
-└── vite.config.js
+│   │   ├── SingleVerification.jsx   # Single label verification mode
+│   │   ├── BatchVerification.jsx    # Batch verification mode
+│   │   ├── ApplicationForm.jsx      # Application data form
+│   │   ├── VerificationResults.jsx  # Single verification results
+│   │   ├── BatchResults.jsx         # Batch results display
+│   │   └── LoadingSpinner.jsx       # Loading indicator
+│   ├── assets/                      # Static assets and sample images
+│   ├── App.jsx                      # Main application component
+│   ├── App.css                      # Application styles
+│   ├── main.jsx                     # Entry point
+│   └── index.css                    # Global styles
+├── public/
+│   └── samples/                     # Sample data for testing
+├── .env.example                     # Environment template
+├── package.json                     # Dependencies
+└── vite.config.js                   # Vite configuration
 ```
-
-## Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `VITE_API_URL` | Backend API URL | `http://localhost:8000` |
 
 ## Deployment
 
-### Vercel (Recommended)
+### Azure Static Web Apps
 
-1. Connect your GitHub repository
-2. Set environment variable:
-   - `VITE_API_URL` = your backend URL
-3. Deploy
+1. Build the application:
+   ```bash
+   npm run build
+   ```
 
-### Manual
+2. Deploy using Azure CLI or GitHub Actions
 
-1. Build: `npm run build`
-2. Deploy `dist/` folder to any static hosting
+3. Set environment variable in Azure portal:
+   - `VITE_API_URL` = backend Container App URL
 
-## Design Principles
+### Manual Deployment
 
-- **Accessibility**: Large fonts, high contrast, keyboard navigation
-- **Simplicity**: Clean UI, obvious actions
-- **Responsive**: Works on desktop and tablet
-- **Error Handling**: Clear error messages and guidance
+1. Run `npm run build`
+2. Deploy contents of `dist/` folder to any static hosting service
+
+## Design
+
+- Clean, accessible interface
+- High contrast colors for readability
+- Responsive layout for desktop and tablet
+- Clear status indicators (green/yellow/red)
+- Loading states and error handling

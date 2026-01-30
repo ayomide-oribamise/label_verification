@@ -205,12 +205,6 @@ function BatchVerification() {
           })
           
           setImageData(newImageData)
-          
-          // Show how many images were matched
-          const matchedCount = images.filter(img => findMatchingCsvRow(img.name, parsed)).length
-          if (images.length > 0 && matchedCount > 0) {
-            console.log(`CSV matched ${matchedCount}/${images.length} images`)
-          }
         } catch (err) {
           setError('Failed to parse CSV file. Please check the format.')
         }
