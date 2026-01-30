@@ -105,6 +105,120 @@ class OCRHealthMetrics:
     quality_warning: Optional[str] = None
 
 
+@dataclass
+class FieldTargetedResult:
+    """Result from field-targeted OCR processing."""
+    brand_text: str
+    brand_confidence: float
+    class_type_text: str
+    class_type_confidence: float
+    abv_text: str
+    abv_confidence: float
+    net_contents_text: str
+    net_contents_confidence: float
+    warning_text: str
+    warning_confidence: float
+    warning_detected: bool  # Keyword-based detection flag
+    combined_raw_text: str
+    overall_confidence: float
+    processing_time_ms: float
+    zones_processed: int
+    zone_timings: Dict[str, float]  # Per-zone timing for debugging
+
+
+# =============================================================================
+# TWO-ZONE FAST PASS ARCHITECTURE
+# =============================================================================
+# Most labels can be processed with just 2 zones:
+#   Pass A: Brand (top) + Footer (bottom)
+#   → Often gets Brand, ABV, Net Contents, Warning from these alone
+#   → Only run mid-zones if something is missing
+# =============================================================================
+
+# Fast pass zones (2 zones only)
+FAST_PASS_ZONES = {
+    "brand": {
+        "y_start": 0.0,
+        "y_end": 0.25,  # Top 25% - brand + often class/type
+        "x_start": 0.0,
+        "x_end": 1.0,
+        "allowlist": None,  # General text
+    },
+    "footer": {
+        "y_start": 0.70,
+        "y_end": 1.0,  # Bottom 30% - ABV, net, warning all here
+        "x_start": 0.0,
+        "x_end": 1.0,
+        "allowlist": None,  # Mixed content
+    },
+}
+
+# Corner crops for ABV/Net (MUCH fewer pixels than full-width bands)
+# Beer labels: ABV is usually bottom-left, Net is usually bottom-right
+CORNER_CROPS = {
+    "abv_corner": {
+        "y_start": 0.55,
+        "y_end": 0.88,
+        "x_start": 0.0,
+        "x_end": 0.45,  # Left 45%
+        "allowlist": "0123456789.%ABVabvPROOFproofALCVOLalcvol/() ",
+    },
+    "net_corner": {
+        "y_start": 0.55,
+        "y_end": 0.92,
+        "x_start": 0.55,
+        "x_end": 1.0,  # Right 45%
+        "allowlist": "0123456789.()mMlLcCfFoOzZ/ ",
+    },
+}
+
+# Mid-zone fallbacks (only if fast pass misses)
+MID_ZONES = {
+    "class_type": {
+        "y_start": 0.18,
+        "y_end": 0.45,
+        "x_start": 0.0,
+        "x_end": 1.0,
+        "allowlist": None,
+    },
+}
+
+# Warning-specific zone with preprocessing
+WARNING_ZONE = {
+    "y_start": 0.82,
+    "y_end": 1.0,
+    "x_start": 0.0,
+    "x_end": 1.0,
+    "allowlist": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz():.,'%-/ ",
+    "preprocess": "threshold",
+}
+
+# Warning detection keywords (any one = warning present)
+WARNING_KEYWORDS = [
+    "government warning",
+    "surgeon general",
+    "pregnancy",
+    "birth defects",
+    "alcoholic beverages",
+    "impairs",
+    "machinery",
+    "health problems",
+]
+
+# Beverage keywords to detect class/type in brand zone
+BEVERAGE_KEYWORDS_FOR_TYPE = {
+    "whiskey", "whisky", "bourbon", "scotch", "vodka", "gin", "rum", "tequila",
+    "wine", "cabernet", "chardonnay", "merlot", "pinot", "sauvignon",
+    "beer", "ale", "lager", "stout", "porter", "ipa", "pilsner",
+    "brandy", "cognac", "liqueur", "cider",
+}
+
+# ABV patterns for quick detection
+ABV_PATTERN = re.compile(r'\d+\.?\d*\s*(%|proof)', re.IGNORECASE)
+# Net contents patterns for quick detection  
+NET_PATTERN = re.compile(r'\d+\.?\d*\s*(ml|cl|l|oz|fl)', re.IGNORECASE)
+
+
 class OCRService:
     """EasyOCR wrapper service with enhanced accuracy features."""
     
@@ -274,6 +388,444 @@ class OCRService:
         }
         
         return result, metrics
+    
+    def process_detect_once(
+        self,
+        image: np.ndarray,
+        max_dimension: int = 1600
+    ) -> OCRResult:
+        """
+        DETECT ONCE architecture: Run EasyOCR detection + recognition ONCE.
+        
+        This is the KEY optimization:
+        - Detection is expensive (~80% of OCR time)
+        - Running readtext() per zone = running detection per zone
+        - Instead: detect once, get all boxes, then slice by position
+        
+        Returns:
+            OCRResult with all boxes in full-image coordinates
+        """
+        if not self.is_ready:
+            logger.error("OCR engine not initialized")
+            return OCRResult.empty()
+        
+        # Downscale once
+        h, w = image.shape[:2]
+        scale = min(1.0, max_dimension / max(h, w))
+        if scale < 1.0:
+            new_w, new_h = int(w * scale), int(h * scale)
+            image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            logger.debug(f"Downscaled from {w}x{h} to {new_w}x{new_h}")
+        
+        with self._semaphore:
+            try:
+                # Single readtext call - detection + recognition in one pass
+                # This is the ONLY OCR call we make for the entire image
+                results = self._reader.readtext(
+                    image,
+                    decoder='greedy',
+                    batch_size=1,
+                    paragraph=False,
+                    detail=1  # Return bounding boxes
+                )
+            except Exception as e:
+                logger.error(f"OCR detect_once failed: {e}")
+                return OCRResult.empty()
+        
+        if not results:
+            logger.warning("OCR returned no results")
+            return OCRResult.empty()
+        
+        # Parse results into OCRBox objects
+        boxes = []
+        for det in results:
+            bbox_points = det[0]
+            text = det[1]
+            conf = det[2]
+            
+            # Normalize text
+            text = self._normalize_text(text)
+            if not text:
+                continue
+            
+            # Convert bbox to int
+            bbox_int = [[int(p[0]), int(p[1])] for p in bbox_points]
+            boxes.append(OCRBox(
+                text=text,
+                confidence=float(conf),
+                bbox=bbox_int
+            ))
+        
+        # Merge adjacent boxes (same line)
+        boxes = self._merge_adjacent_boxes(boxes)
+        
+        # Calculate average confidence
+        avg_conf = (sum(b.confidence for b in boxes) / len(boxes)) if boxes else 0.0
+        
+        # Build raw text (sorted by position)
+        if boxes:
+            line_h = int(np.median([b.height for b in boxes]))
+            line_h = max(12, min(line_h, 60))
+            sorted_boxes = sorted(boxes, key=lambda b: (b.top // line_h, b.left))
+            raw_text = " ".join(b.text for b in sorted_boxes)
+        else:
+            raw_text = ""
+        
+        return OCRResult(
+            boxes=boxes,
+            raw_text=raw_text,
+            average_confidence=avg_conf,
+            metrics={"detect_once": True}
+        )
+    
+    def process_field_targeted(
+        self,
+        image: np.ndarray,
+        max_dimension: int = 1600
+    ) -> Tuple[FieldTargetedResult, OCRResult]:
+        """
+        DETECT ONCE + SLICE BY POSITION architecture.
+        
+        Strategy (per engineer):
+        1. Run OCR detection ONCE on full image
+        2. Slice detected boxes by Y-position to get zone texts
+        3. NO additional OCR calls for zones
+        4. Only if field STILL missing: ONE focused fallback crop
+        
+        This cuts detection from 5x to 1x = ~5x speedup.
+        
+        Returns:
+            Tuple of (FieldTargetedResult, OCRResult for compatibility)
+        """
+        start_time = time.time()
+        zone_timings = {}
+        
+        # =================================================================
+        # STEP 1: DETECT ONCE (single OCR call for entire image)
+        # =================================================================
+        t0 = time.time()
+        ocr_result = self.process_detect_once(image, max_dimension=max_dimension)
+        detect_ms = (time.time() - t0) * 1000
+        zone_timings["detect_once_ms"] = round(detect_ms, 1)
+        zone_timings["total_boxes"] = len(ocr_result.boxes)
+        
+        # Get image bounds from detected boxes
+        h, w = image.shape[:2]
+        if ocr_result.boxes:
+            # Use box positions to determine effective image height
+            min_y = min(b.top for b in ocr_result.boxes)
+            max_y = max(b.bottom for b in ocr_result.boxes)
+            used_h = max(1, max_y - min_y)
+            base_y = min_y
+        else:
+            used_h = h
+            base_y = 0
+        
+        # =================================================================
+        # STEP 2: SLICE BOXES BY Y-POSITION (no OCR, just filtering)
+        # =================================================================
+        t1 = time.time()
+        
+        def get_zone_text(y0_pct: float, y1_pct: float) -> Tuple[str, float]:
+            """Get text from boxes within Y-range (as percentage of used_h)."""
+            if not ocr_result.boxes:
+                return "", 0.0
+            
+            y_start = base_y + int(used_h * y0_pct)
+            y_end = base_y + int(used_h * y1_pct)
+            
+            # Filter boxes by center_y position
+            zone_boxes = [b for b in ocr_result.boxes 
+                         if y_start <= b.center_y <= y_end]
+            
+            if not zone_boxes:
+                return "", 0.0
+            
+            # Sort left-to-right within lines
+            line_h = int(np.median([b.height for b in zone_boxes]))
+            line_h = max(12, min(line_h, 60))
+            sorted_boxes = sorted(zone_boxes, key=lambda b: (b.top // line_h, b.left))
+            
+            text = " ".join(b.text for b in sorted_boxes)
+            conf = sum(b.confidence for b in sorted_boxes) / len(sorted_boxes)
+            return text, conf
+        
+        # Slice zones from detected boxes (NO OCR calls here)
+        brand_text, brand_conf = get_zone_text(0.00, 0.30)      # Top 30%
+        class_text, class_conf = get_zone_text(0.15, 0.55)      # Upper-mid
+        abv_text, abv_conf = get_zone_text(0.40, 0.85)          # Mid-lower
+        net_text, net_conf = get_zone_text(0.55, 0.95)          # Lower
+        warn_text, warn_conf = get_zone_text(0.75, 1.00)        # Bottom
+        
+        slice_ms = (time.time() - t1) * 1000
+        zone_timings["slice_ms"] = round(slice_ms, 1)
+        
+        # =================================================================
+        # STEP 3: CHECK WHAT'S MISSING AND DO FOCUSED FALLBACKS
+        # =================================================================
+        combined_raw_text = ocr_result.raw_text
+        fallbacks_run = []
+        
+        # Check if ABV is found
+        has_abv = bool(ABV_PATTERN.search(abv_text)) or bool(ABV_PATTERN.search(combined_raw_text))
+        if not has_abv and not ABV_PATTERN.search(combined_raw_text):
+            # Fallback: OCR bottom-left corner with allowlist
+            t_abv = time.time()
+            h_img, w_img = image.shape[:2]
+            abv_crop = image[int(h_img*0.55):int(h_img*0.95), 0:int(w_img*0.50)]
+            abv_ocr = self._process_single(abv_crop, allowlist="0123456789.%ABVabvPROOFproofALCVOL/() ")
+            abv_text = abv_ocr.raw_text
+            abv_conf = abv_ocr.average_confidence
+            zone_timings["abv_fallback_ms"] = round((time.time() - t_abv) * 1000, 1)
+            fallbacks_run.append("abv")
+        
+        # Check if net contents is found
+        has_net = bool(NET_PATTERN.search(net_text)) or bool(NET_PATTERN.search(combined_raw_text))
+        if not has_net and not NET_PATTERN.search(combined_raw_text):
+            # Fallback: OCR bottom-right corner with allowlist
+            t_net = time.time()
+            h_img, w_img = image.shape[:2]
+            net_crop = image[int(h_img*0.55):int(h_img*0.95), int(w_img*0.50):w_img]
+            net_ocr = self._process_single(net_crop, allowlist="0123456789.()mMlLcCfFoOzZ/ ")
+            net_text = net_ocr.raw_text
+            net_conf = net_ocr.average_confidence
+            zone_timings["net_fallback_ms"] = round((time.time() - t_net) * 1000, 1)
+            fallbacks_run.append("net")
+        
+        zone_timings["fallbacks_run"] = fallbacks_run
+        
+        # =================================================================
+        # STEP 4: WARNING DETECTION (keywords + density heuristic)
+        # =================================================================
+        warning_detected = self._detect_warning_keywords(warn_text, combined_raw_text)
+        
+        # Density heuristic: many small boxes in bottom = likely warning
+        if not warning_detected and ocr_result.boxes:
+            bottom_boxes = [b for b in ocr_result.boxes if b.center_y >= base_y + used_h * 0.80]
+            if len(bottom_boxes) >= 5:
+                avg_height = sum(b.height for b in bottom_boxes) / len(bottom_boxes)
+                if avg_height < used_h * 0.04:  # Small text
+                    warning_detected = True
+                    zone_timings["warning_by_density"] = True
+        
+        # =================================================================
+        # BUILD RESULTS
+        # =================================================================
+        overall_confidence = ocr_result.average_confidence
+        processing_time = (time.time() - start_time) * 1000
+        zone_timings["total_ms"] = round(processing_time, 1)
+        
+        field_result = FieldTargetedResult(
+            brand_text=brand_text,
+            brand_confidence=brand_conf if brand_conf > 0 else overall_confidence,
+            class_type_text=class_text,
+            class_type_confidence=class_conf if class_conf > 0 else overall_confidence,
+            abv_text=abv_text,
+            abv_confidence=abv_conf if abv_conf > 0 else overall_confidence,
+            net_contents_text=net_text,
+            net_contents_confidence=net_conf if net_conf > 0 else overall_confidence,
+            warning_text=warn_text,
+            warning_confidence=warn_conf if warn_conf > 0 else overall_confidence,
+            warning_detected=warning_detected,
+            combined_raw_text=combined_raw_text,
+            overall_confidence=overall_confidence,
+            processing_time_ms=processing_time,
+            zones_processed=0,  # No zone OCR, just slicing
+            zone_timings=zone_timings
+        )
+        
+        # Update OCRResult metrics
+        ocr_result.metrics = {
+            "field_targeted": True,
+            "strategy": "detect_once_then_slice",
+            "processing_time_ms": processing_time,
+            "zone_timings": zone_timings,
+        }
+        
+        # Log timing breakdown
+        logger.info(
+            f"DETECT-ONCE OCR: {len(ocr_result.boxes)} boxes, conf={overall_confidence:.2f}, "
+            f"total={processing_time:.0f}ms | "
+            f"detect={detect_ms:.0f}ms, slice={slice_ms:.0f}ms"
+        )
+        if fallbacks_run:
+            logger.info(f"  + fallbacks: {fallbacks_run}")
+        
+        return field_result, ocr_result
+    
+    def _crop_zone(
+        self, 
+        image: np.ndarray, 
+        h: int, 
+        w: int, 
+        zone: Dict[str, Any]
+    ) -> np.ndarray:
+        """Crop a zone from the image."""
+        y_start = int(h * zone["y_start"])
+        y_end = int(h * zone["y_end"])
+        x_start = int(w * zone.get("x_start", 0.0))
+        x_end = int(w * zone.get("x_end", 1.0))
+        return image[y_start:y_end, x_start:x_end]
+    
+    def _adjust_boxes_to_image_xy(
+        self,
+        boxes: List[OCRBox],
+        y_offset: int,
+        x_offset: int
+    ) -> List[OCRBox]:
+        """Adjust box coordinates from zone space to full image space (with X offset)."""
+        adjusted = []
+        for box in boxes:
+            adjusted_bbox = [
+                [p[0] + x_offset, p[1] + y_offset] for p in box.bbox
+            ]
+            adjusted.append(OCRBox(
+                text=box.text,
+                confidence=box.confidence,
+                bbox=adjusted_bbox
+            ))
+        return adjusted
+    
+    def _check_warning_density(
+        self,
+        footer_boxes: List[OCRBox],
+        image_height: int
+    ) -> bool:
+        """
+        Heuristic: If bottom strip has high text density, likely contains warning.
+        
+        Warning blocks are characterized by:
+        - Many small boxes
+        - Dense paragraph-like structure
+        - Located in bottom 20% of image
+        
+        Returns True if warning likely present even if OCR didn't read it clearly.
+        """
+        if not footer_boxes:
+            return False
+        
+        # Filter to boxes in bottom 20%
+        bottom_threshold = image_height * 0.80
+        bottom_boxes = [b for b in footer_boxes if b.top >= bottom_threshold]
+        
+        if len(bottom_boxes) < 5:
+            return False
+        
+        # Check for small, dense text (typical warning characteristics)
+        avg_height = sum(b.height for b in bottom_boxes) / len(bottom_boxes)
+        
+        # Warning text is typically small (< 3% of image height)
+        if avg_height < image_height * 0.03 and len(bottom_boxes) >= 8:
+            logger.debug(f"Warning detected by density: {len(bottom_boxes)} small boxes in bottom strip")
+            return True
+        
+        return False
+    
+    def _preprocess_warning_zone(self, crop: np.ndarray) -> np.ndarray:
+        """
+        Preprocess warning zone for better OCR on dense small text.
+        
+        Warning text is typically:
+        - Very small font
+        - Dense paragraph
+        - Low contrast on some labels
+        
+        Apply grayscale + adaptive threshold for cleaner text.
+        """
+        # Convert to grayscale if needed
+        if len(crop.shape) == 3:
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = crop.copy()
+        
+        # Apply adaptive threshold for better text/background separation
+        # ADAPTIVE_THRESH_GAUSSIAN_C works well for text
+        binary = cv2.adaptiveThreshold(
+            gray, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            blockSize=15,  # Neighborhood size
+            C=8  # Constant subtracted from mean
+        )
+        
+        return binary
+    
+    def _adjust_boxes_to_image(
+        self, 
+        boxes: List[OCRBox], 
+        y_offset: int
+    ) -> List[OCRBox]:
+        """Adjust box coordinates from zone space to full image space."""
+        adjusted = []
+        for box in boxes:
+            adjusted_bbox = [
+                [p[0], p[1] + y_offset] for p in box.bbox
+            ]
+            adjusted.append(OCRBox(
+                text=box.text,
+                confidence=box.confidence,
+                bbox=adjusted_bbox
+            ))
+        return adjusted
+    
+    def _identify_missing_fields(
+        self, 
+        zone_results: Dict[str, Any]
+    ) -> List[str]:
+        """
+        Identify fields that need expanded zone search.
+        
+        A field is "missing" if:
+        - No text detected
+        - Very low confidence
+        - Text doesn't contain expected patterns
+        """
+        missing = []
+        
+        # Check ABV - should have digits and % or proof
+        abv_text = zone_results.get("abv", {}).get("text", "")
+        if not re.search(r'\d+\.?\d*\s*(%|proof)', abv_text, re.IGNORECASE):
+            missing.append("abv")
+        
+        # Check net contents - should have digits and units
+        net_text = zone_results.get("net_contents", {}).get("text", "")
+        if not re.search(r'\d+\.?\d*\s*(ml|cl|l|oz|fl)', net_text, re.IGNORECASE):
+            missing.append("net_contents")
+        
+        # Check brand - should have some text
+        brand_text = zone_results.get("brand", {}).get("text", "")
+        if len(brand_text.strip()) < 3:
+            missing.append("brand")
+        
+        # Check class_type - should have some text
+        type_text = zone_results.get("class_type", {}).get("text", "")
+        if len(type_text.strip()) < 3:
+            missing.append("class_type")
+        
+        if missing:
+            logger.debug(f"Missing fields for expansion: {missing}")
+        
+        return missing
+    
+    def _detect_warning_keywords(
+        self, 
+        warning_text: str, 
+        full_text: str
+    ) -> bool:
+        """
+        Keyword-based warning detection.
+        
+        Per engineer: "Any one keyword is enough for 'warning present'."
+        Don't need to parse the entire warning text perfectly.
+        """
+        combined = (warning_text + " " + full_text).lower()
+        
+        for keyword in WARNING_KEYWORDS:
+            if keyword in combined:
+                logger.debug(f"Warning detected via keyword: '{keyword}'")
+                return True
+        
+        return False
     
     def _process_single(
         self, 

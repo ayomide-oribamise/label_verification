@@ -8,10 +8,13 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - IMAGE_MAX_SIZE_MB=5
-      - IMAGE_MAX_DIMENSION=2000
-      - BATCH_MAX_FILES=50
-      - BATCH_MAX_WORKERS=2
+      - ENVIRONMENT=development
+      - LOG_LEVEL=INFO
+      - MAX_UPLOAD_SIZE_MB=15
+      - IMAGE_MAX_DIMENSION=1600
+      - OCR_MAX_CONCURRENT=1
+      - MAX_WORKERS=1
+      - CORS_ORIGINS=*
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 30s
@@ -21,7 +24,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 4G
         reservations:
-          memory: 1G
+          memory: 2G
     restart: unless-stopped

@@ -486,7 +486,7 @@ class SequentialBatchProcessor:
             image_bytes = images[filename]
             
             try:
-                # Validate image
+                # Validate image (upload size check)
                 is_valid, error_msg = preprocessor.validate_image(image_bytes, filename)
                 if not is_valid:
                     results.append({
@@ -497,17 +497,32 @@ class SequentialBatchProcessor:
                     })
                     continue
                 
+                # Convert ALL formats to OCR-friendly JPEG (critical for performance)
+                from .preprocessing import convert_to_ocr_friendly
+                try:
+                    image_bytes, conversion_meta = convert_to_ocr_friendly(
+                        image_bytes,
+                        max_dim=self.settings.max_image_width,
+                        jpeg_quality=self.settings.jpeg_quality,
+                        max_output_mb=self.settings.max_converted_size_mb
+                    )
+                    logger.debug(f"[{filename}] Converted: {conversion_meta['compression_ratio']:.1f}x")
+                except ValueError as e:
+                    results.append({
+                        "filename": filename,
+                        "success": False,
+                        "error": str(e),
+                        "result": None
+                    })
+                    continue
+                
                 # Preprocess
                 processed_image, preprocessing_meta = preprocessor.preprocess(image_bytes)
                 
-                # OCR with fallback for better accuracy
-                ocr_result, ocr_metrics = ocr_service.process_with_fallback(
-                    processed_image,
-                    preprocessor=preprocessor,
-                    image_bytes=image_bytes
-                )
+                # Field-targeted OCR (semantic zone processing for beer/wine accuracy)
+                field_ocr_result, ocr_result = ocr_service.process_field_targeted(processed_image)
                 
-                if not ocr_result.boxes:
+                if not ocr_result.boxes and not field_ocr_result.combined_raw_text:
                     # Include quality recommendation if available
                     quality_rec = preprocessing_meta.get("quality_recommendation", "")
                     error_msg = "Unable to extract text from image"
@@ -521,8 +536,8 @@ class SequentialBatchProcessor:
                     })
                     continue
                 
-                # Extract fields
-                extraction_result = field_extractor.extract_all(ocr_result)
+                # Extract fields using zone-specific text
+                extraction_result = field_extractor.extract_all_field_targeted(field_ocr_result, ocr_result)
                 
                 # Verify
                 verification_result = verification_service.verify(
