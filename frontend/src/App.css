@@ -647,6 +647,43 @@ body {
   padding: 1rem;
   border-radius: var(--radius-md);
   margin-bottom: 1.5rem;
+  border: 1px solid var(--color-border);
+}
+
+.results-summary.status-match {
+  background: var(--color-success-bg);
+  border-color: var(--color-success);
+}
+
+.results-summary.status-review {
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning);
+}
+
+.results-summary.status-mismatch {
+  background: var(--color-error-bg);
+  border-color: var(--color-error);
+}
+
+.issue-groups {
+  display: grid;
+  gap: 0.875rem;
+  margin-bottom: 1rem;
+}
+
+.issue-group h4 {
+  margin: 0 0 0.375rem;
+  font-size: 0.9375rem;
+}
+
+.issue-group ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.issue-group li {
+  margin: 0.25rem 0;
+  line-height: 1.45;
 }
 
 .results-summary pre {
@@ -654,6 +691,7 @@ body {
   font-family: inherit;
   font-size: 0.9375rem;
   line-height: 1.6;
+  margin: 0;
 }
 
 /* ===== Results Table ===== */
@@ -700,6 +738,18 @@ body {
   border-radius: var(--radius-sm);
   font-size: 0.8125rem;
   font-weight: 500;
+  text-transform: capitalize;
+}
+
+.field-message {
+  line-height: 1.45;
+}
+
+.field-guidance {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--color-text-light);
+  font-size: 0.8125rem;
 }
 
 .not-found {
@@ -1192,6 +1242,24 @@ body {
   border-radius: var(--radius-sm);
 }
 
+.row-issues {
+  padding: 0.5rem;
+  margin-bottom: 0.5rem;
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-sm);
+}
+
+.row-issues strong {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.row-issues ul {
+  margin: 0;
+  padding-left: 1rem;
+}
+
 .field-row {
   display: flex;
   align-items: flex-start;
@@ -1207,6 +1275,10 @@ body {
 .field-row .field-name {
   font-weight: 500;
   flex-shrink: 0;
+}
+
+.field-row .field-message {
+  min-width: 0;
 }
 
 .error-message {
