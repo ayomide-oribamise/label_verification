@@ -35,7 +35,6 @@ htmlcov/
 # Terraform / Infra
 # ===================
 **/.terraform/
-**/.terraform.lock.hcl
 *.tfstate
 *.tfstate.*
 *.tfvars
