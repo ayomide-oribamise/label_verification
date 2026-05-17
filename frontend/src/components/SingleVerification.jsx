@@ -5,14 +5,12 @@ import ApplicationForm from './ApplicationForm'
 import VerificationResults from './VerificationResults'
 import LoadingSpinner from './LoadingSpinner'
 
-// Import sample images
 import sampleBourbon from '../assets/sample_bourbon.png'
 import sampleBeer from '../assets/sample_beer.png'
 import sampleWine from '../assets/sample_wine.png'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-// Default sample application data with images for quick testing
 const DEFAULT_SAMPLES = [
   {
     id: 'old-tom',
@@ -87,15 +85,14 @@ function SingleVerification() {
   const [showSaveModal, setShowSaveModal] = useState(false)
   const [saveName, setSaveName] = useState('')
 
-  // Load saved applications from localStorage
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY)
       if (saved) {
         setSavedApplications(JSON.parse(saved))
       }
-    } catch (e) {
-      console.error('Failed to load saved applications:', e)
+    } catch {
+      setSavedApplications([])
     }
   }, [])
 
@@ -140,12 +137,10 @@ function SingleVerification() {
     setError(null)
   }
 
-  // Load complete sample (image + data) for quick testing
   const loadCompleteSample = async (sample) => {
     if (!sample.image) return
     
     try {
-      // Fetch the image and convert to File object
       const response = await fetch(sample.image)
       const blob = await response.blob()
       const file = new File([blob], `${sample.id}.png`, { type: 'image/png' })
@@ -156,9 +151,7 @@ function SingleVerification() {
       setSelectedSample(sample.id)
       setError(null)
       setResults(null)
-    } catch (err) {
-      console.error('Failed to load sample image:', err)
-      // Fall back to just loading the form data
+    } catch {
       setFormData(sample.data)
       setSelectedSample(sample.id)
       setError(null)
@@ -188,8 +181,8 @@ function SingleVerification() {
     
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updated))
-    } catch (e) {
-      console.error('Failed to save application:', e)
+    } catch {
+      setError('Unable to save this application in the browser.')
     }
 
     setShowSaveModal(false)
@@ -203,8 +196,8 @@ function SingleVerification() {
     
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updated))
-    } catch (e) {
-      console.error('Failed to delete application:', e)
+    } catch {
+      setError('Unable to update saved applications in the browser.')
     }
 
     if (selectedSample === appId) {
@@ -262,7 +255,6 @@ function SingleVerification() {
         setError(response.data.error || 'Verification failed. Please try again.')
       }
     } catch (err) {
-      console.error('Verification error:', err)
       if (err.code === 'ECONNABORTED') {
         setError('Request timed out. The server may be busy. Please try again.')
       } else if (err.response?.data?.error) {
@@ -290,9 +282,8 @@ function SingleVerification() {
 
   return (
     <div className="single-verification">
-      {/* Quick Test Section */}
       <div className="quick-test-section">
-        <h3>🚀 Verify a sample against the 5-second target</h3>
+        <h3>Verify a sample against the under-5-second target</h3>
         <p>Load a pre-filled label, then run verification and check the processing time.</p>
         <div className="sample-cards">
           {DEFAULT_SAMPLES.map(sample => (
@@ -317,7 +308,6 @@ function SingleVerification() {
       </div>
 
       <div className="verification-layout">
-        {/* Left side: Image upload */}
         <div className="upload-section">
           <h2>1. Upload Label Image</h2>
           
@@ -347,11 +337,9 @@ function SingleVerification() {
           </div>
         </div>
 
-        {/* Right side: Form */}
         <div className="form-section">
           <h2>2. Enter Application Data</h2>
           
-          {/* Sample Application Selector */}
           <div className="sample-selector">
             <div className="sample-header">
               <p className="sample-label">Load saved application:</p>
@@ -366,7 +354,6 @@ function SingleVerification() {
               )}
             </div>
             
-            {/* Default samples */}
             <div className="sample-group">
               <span className="sample-group-label">Samples:</span>
               <div className="sample-buttons">
@@ -384,7 +371,6 @@ function SingleVerification() {
               </div>
             </div>
 
-            {/* Custom saved applications */}
             {savedApplications.length > 0 && (
               <div className="sample-group">
                 <span className="sample-group-label">Your saved:</span>
@@ -426,7 +412,6 @@ function SingleVerification() {
         </div>
       </div>
 
-      {/* Save Modal */}
       {showSaveModal && (
         <div className="modal-overlay" onClick={() => setShowSaveModal(false)}>
           <div className="modal-content" onClick={e => e.stopPropagation()}>
@@ -461,7 +446,6 @@ function SingleVerification() {
         </div>
       )}
 
-      {/* Error display */}
       {error && (
         <div className="error-banner" role="alert">
           <span className="error-icon">⚠️</span>
@@ -470,7 +454,6 @@ function SingleVerification() {
         </div>
       )}
 
-      {/* Action buttons */}
       <div className="action-buttons">
         <button
           className="btn btn-primary btn-large"
@@ -488,7 +471,6 @@ function SingleVerification() {
         </button>
       </div>
 
-      {/* Results */}
       {results && <VerificationResults results={results} />}
     </div>
   )

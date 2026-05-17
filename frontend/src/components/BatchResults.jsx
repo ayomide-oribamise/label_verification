@@ -40,7 +40,7 @@ function BatchResults({ results }) {
   const formatSpeedTarget = (processingTimeMs) => {
     if (!processingTimeMs) return ''
     const seconds = (processingTimeMs / 1000).toFixed(1)
-    return `${seconds}s, ${processingTimeMs <= 5000 ? 'meets' : 'exceeds'} 5s target`
+    return `${seconds}s, ${processingTimeMs < 5000 ? 'under' : 'above'} 5s target`
   }
 
   const formatStatusLabel = (status) => {
@@ -92,7 +92,6 @@ function BatchResults({ results }) {
         </button>
       </div>
 
-      {/* Summary stats */}
       <div className="batch-summary">
         <div className="stat">
           <span className="stat-value">{total}</span>
@@ -118,7 +117,6 @@ function BatchResults({ results }) {
         )}
       </div>
 
-      {/* Results table */}
       <div className="batch-table-container">
         <table className="batch-table">
           <thead>

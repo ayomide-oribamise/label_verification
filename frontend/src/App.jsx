@@ -5,7 +5,7 @@ import BatchVerification from './components/BatchVerification'
 import logo from './assets/logo.png'
 
 function App() {
-  const [mode, setMode] = useState('single') // 'single' or 'batch'
+  const [mode, setMode] = useState('single')
 
   return (
     <div className="app">

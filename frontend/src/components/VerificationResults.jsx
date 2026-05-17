@@ -5,7 +5,7 @@ function VerificationResults({ results }) {
 
   const { result, extracted } = results
   const { overall_status, fields, summary, processing_time_ms, issues = [] } = result
-  const metFiveSecondTarget = processing_time_ms && processing_time_ms <= 5000
+  const metFiveSecondTarget = processing_time_ms && processing_time_ms < 5000
   const contradictionFields = fields.filter((field) => field.status === 'mismatch')
   const primaryMissingFields = fields.filter((field) => (
     field.status === 'not_visible_on_label' && field.category === 'required_on_primary'
@@ -80,7 +80,6 @@ function VerificationResults({ results }) {
     <div className="verification-results">
       <h2>Verification Results</h2>
 
-      {/* Overall status banner */}
       <div className={`overall-status ${getStatusClass(overall_status)}`}>
         <span className="status-icon">{getStatusIcon(overall_status)}</span>
         <div className="status-content">
@@ -89,13 +88,12 @@ function VerificationResults({ results }) {
             <span className="processing-time">
               Processed in {(processing_time_ms / 1000).toFixed(2)}s
               {' '}
-              ({metFiveSecondTarget ? 'meets' : 'exceeds'} 5s target)
+              ({metFiveSecondTarget ? 'under' : 'above'} 5s target)
             </span>
           )}
         </div>
       </div>
 
-      {/* Summary */}
       {(summary || issues.length > 0) && (
         <div className={`results-summary ${getStatusClass(overall_status)}`}>
           {issues.length > 0 && (
@@ -136,7 +134,6 @@ function VerificationResults({ results }) {
         </div>
       )}
 
-      {/* Field-by-field results */}
       <div className="field-results">
         <h3>Field Details</h3>
         <table className="results-table">
@@ -176,7 +173,6 @@ function VerificationResults({ results }) {
         </table>
       </div>
 
-      {/* Extracted text (collapsible) */}
       {extracted && (
         <details className="extracted-details">
           <summary>View Extracted Data</summary>
