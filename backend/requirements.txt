@@ -7,16 +7,15 @@ python-multipart>=0.0.6,<0.1.0
 opencv-python-headless==4.10.0.84
 Pillow>=10.2.0,<12.0.0
 
-# OCR - PaddleOCR 2.7.x (pre-PIR, stable on CPU/AMD64)
+# OCR
 paddleocr==2.7.0.3
-paddlepaddle==2.5.2
-# PaddleOCR 2.7 requires these explicit pins
+paddlepaddle==2.6.2
 shapely>=2.0.0,<3.0.0
 pyclipper>=1.3.0
 scikit-image>=0.21.0
 imgaug>=0.4.0
 lmdb>=1.4.0
-# numpy<2 is critical - paddlepaddle 2.5.2 breaks on numpy 2.x
+PyMuPDF==1.20.2
 numpy>=1.24.0,<2.0.0
 
 # Validation and utilities
