@@ -63,6 +63,32 @@ function ApplicationForm({ formData, onChange, disabled }) {
         </div>
       </div>
 
+      <div className="form-group">
+        <label htmlFor="bottler_producer">Bottler / Producer</label>
+        <input
+          type="text"
+          id="bottler_producer"
+          value={formData.bottler_producer || ''}
+          onChange={(e) => onChange('bottler_producer', e.target.value)}
+          placeholder="e.g., Bottled by Old Tom Distillery, Louisville, KY"
+          disabled={disabled}
+        />
+        <p className="field-hint">Optional name and address statement from the application</p>
+      </div>
+
+      <div className="form-group">
+        <label htmlFor="country_of_origin">Country of Origin</label>
+        <input
+          type="text"
+          id="country_of_origin"
+          value={formData.country_of_origin || ''}
+          onChange={(e) => onChange('country_of_origin', e.target.value)}
+          placeholder="For imports, e.g., France"
+          disabled={disabled}
+        />
+        <p className="field-hint">Use only when the product is imported</p>
+      </div>
+
       <div className="form-group checkbox-group">
         <label className="checkbox-label">
           <input

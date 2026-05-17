@@ -1,7 +1,7 @@
 function BatchResults({ results }) {
   if (!results) return null
 
-  const { total, processed, passed, needs_review, failed, results: rowResults, processing_time_ms } = results
+  const { total, passed, needs_review, failed, results: rowResults, processing_time_ms } = results
 
   const getStatusIcon = (status) => {
     switch (status) {
@@ -29,6 +29,12 @@ function BatchResults({ results }) {
       default:
         return ''
     }
+  }
+
+  const formatSpeedTarget = (processingTimeMs) => {
+    if (!processingTimeMs) return ''
+    const seconds = (processingTimeMs / 1000).toFixed(1)
+    return `${seconds}s, ${processingTimeMs <= 5000 ? 'meets' : 'exceeds'} 5s target`
   }
 
   const exportResults = () => {
@@ -114,7 +120,7 @@ function BatchResults({ results }) {
                     <details>
                       <summary>
                         {row.result?.fields?.length || 0} fields verified
-                        {row.result?.processing_time_ms && ` (${row.result.processing_time_ms}ms)`}
+                        {row.result?.processing_time_ms && ` (${formatSpeedTarget(row.result.processing_time_ms)})`}
                       </summary>
                       <div className="row-details">
                         {row.result?.fields?.map((field, i) => (

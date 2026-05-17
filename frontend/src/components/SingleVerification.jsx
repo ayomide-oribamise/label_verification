@@ -25,6 +25,8 @@ const DEFAULT_SAMPLES = [
       class_type: 'Kentucky Straight Bourbon Whiskey',
       abv_percent: '45',
       net_contents_ml: '750',
+      bottler_producer: 'Bottled by Old Tom Distillery, Louisville, KY',
+      country_of_origin: '',
       has_warning: true,
     }
   },
@@ -39,6 +41,8 @@ const DEFAULT_SAMPLES = [
       class_type: 'India Pale Ale',
       abv_percent: '6.8',
       net_contents_ml: '355',
+      bottler_producer: 'Brewed by Mountain Brew Co, Denver, CO',
+      country_of_origin: '',
       has_warning: true,
     }
   },
@@ -53,23 +57,28 @@ const DEFAULT_SAMPLES = [
       class_type: 'Cabernet Sauvignon',
       abv_percent: '14.5',
       net_contents_ml: '750',
+      bottler_producer: 'Produced and bottled by Silver Oak Cellars, Oakville, CA',
+      country_of_origin: '',
       has_warning: true,
     }
   },
 ]
 
 const STORAGE_KEY = 'labelcheck_saved_applications'
+const EMPTY_APPLICATION = {
+  brand_name: '',
+  class_type: '',
+  abv_percent: '',
+  net_contents_ml: '',
+  bottler_producer: '',
+  country_of_origin: '',
+  has_warning: true,
+}
 
 function SingleVerification() {
   const [image, setImage] = useState(null)
   const [imagePreview, setImagePreview] = useState(null)
-  const [formData, setFormData] = useState({
-    brand_name: '',
-    class_type: '',
-    abv_percent: '',
-    net_contents_ml: '',
-    has_warning: true,
-  })
+  const [formData, setFormData] = useState(EMPTY_APPLICATION)
   const [selectedSample, setSelectedSample] = useState(null)
   const [savedApplications, setSavedApplications] = useState([])
   const [results, setResults] = useState(null)
@@ -89,9 +98,6 @@ function SingleVerification() {
       console.error('Failed to load saved applications:', e)
     }
   }, [])
-
-  // Combine default and saved applications
-  const allApplications = [...DEFAULT_SAMPLES, ...savedApplications]
 
   const onDrop = useCallback((acceptedFiles, rejectedFiles) => {
     if (rejectedFiles.length > 0) {
@@ -234,6 +240,12 @@ function SingleVerification() {
     if (formData.net_contents_ml) {
       submitData.append('net_contents_ml', parseFloat(formData.net_contents_ml))
     }
+    if (formData.bottler_producer) {
+      submitData.append('bottler_producer', formData.bottler_producer)
+    }
+    if (formData.country_of_origin) {
+      submitData.append('country_of_origin', formData.country_of_origin)
+    }
     submitData.append('has_warning', formData.has_warning)
 
     try {
@@ -268,13 +280,7 @@ function SingleVerification() {
   const handleClear = () => {
     setImage(null)
     setImagePreview(null)
-    setFormData({
-      brand_name: '',
-      class_type: '',
-      abv_percent: '',
-      net_contents_ml: '',
-      has_warning: true,
-    })
+    setFormData(EMPTY_APPLICATION)
     setSelectedSample(null)
     setResults(null)
     setError(null)
@@ -286,8 +292,8 @@ function SingleVerification() {
     <div className="single-verification">
       {/* Quick Test Section */}
       <div className="quick-test-section">
-        <h3>🚀 Try it in less than 10 seconds</h3>
-        <p>Click a sample label to load it with pre-filled application data:</p>
+        <h3>🚀 Verify a sample against the 5-second target</h3>
+        <p>Load a pre-filled label, then run verification and check the processing time.</p>
         <div className="sample-cards">
           {DEFAULT_SAMPLES.map(sample => (
             <button

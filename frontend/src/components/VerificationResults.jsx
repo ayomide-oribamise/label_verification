@@ -5,6 +5,7 @@ function VerificationResults({ results }) {
 
   const { result, extracted } = results
   const { overall_status, fields, summary, processing_time_ms } = result
+  const metFiveSecondTarget = processing_time_ms && processing_time_ms <= 5000
 
   const getStatusIcon = (status) => {
     switch (status) {
@@ -59,6 +60,8 @@ function VerificationResults({ results }) {
           {processing_time_ms && (
             <span className="processing-time">
               Processed in {(processing_time_ms / 1000).toFixed(2)}s
+              {' '}
+              ({metFiveSecondTarget ? 'meets' : 'exceeds'} 5s target)
             </span>
           )}
         </div>
@@ -124,6 +127,12 @@ function VerificationResults({ results }) {
               
               <dt>Net Contents</dt>
               <dd>{extracted.net_contents_ml ? `${extracted.net_contents_ml} mL` : 'Not detected'}</dd>
+
+              <dt>Bottler / Producer</dt>
+              <dd>{extracted.bottler_producer || 'Not detected'}</dd>
+
+              <dt>Country of Origin</dt>
+              <dd>{extracted.country_of_origin || 'Not detected'}</dd>
               
               <dt>Government Warning</dt>
               <dd>{extracted.government_warning || 'Not detected'}</dd>

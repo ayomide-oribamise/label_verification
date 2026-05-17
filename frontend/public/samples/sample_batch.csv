@@ -1,4 +1,4 @@
-filename,brand_name,class_type,abv_percent,net_contents_ml,has_warning
-sample_bourbon.png,OLD TOM DISTILLERY,Kentucky Straight Bourbon Whiskey,45,750,true
-sample_beer.png,MOUNTAIN BREW CO,India Pale Ale,6.8,355,true
-sample_wine.png,SILVER OAK,Cabernet Sauvignon,14.5,750,true
+filename,brand_name,class_type,abv_percent,net_contents_ml,bottler_producer,country_of_origin,has_warning
+sample_bourbon.png,OLD TOM DISTILLERY,Kentucky Straight Bourbon Whiskey,45,750,"Bottled by Old Tom Distillery, Louisville, KY",,true
+sample_beer.png,MOUNTAIN BREW CO,India Pale Ale,6.8,355,"Brewed by Mountain Brew Co, Denver, CO",,true
+sample_wine.png,SILVER OAK,Cabernet Sauvignon,14.5,750,"Produced and bottled by Silver Oak Cellars, Oakville, CA",,true
