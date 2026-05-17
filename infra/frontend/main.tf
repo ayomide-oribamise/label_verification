@@ -1,6 +1,3 @@
-# Azure Frontend Infrastructure for Label Verification UI
-# Deploys: Azure Static Web App (perfect for React/Vite SPAs)
-
 terraform {
   required_version = ">= 1.0.0"
 
@@ -19,7 +16,6 @@ provider "azurerm" {
   skip_provider_registration = var.skip_provider_registration
 }
 
-# Locals
 locals {
   name_suffix         = var.name_suffix == "" ? "" : "-${var.name_suffix}"
   resource_prefix     = "${var.project_name}-${var.environment}${local.name_suffix}"
@@ -31,14 +27,12 @@ locals {
   }
 }
 
-# Resource Group (can be shared with backend or separate)
 resource "azurerm_resource_group" "main" {
   name     = local.resource_group_name
   location = var.location
   tags     = local.tags
 }
 
-# Azure Static Web App
 resource "azurerm_static_web_app" "main" {
   name                = "swa-${local.resource_prefix}"
   resource_group_name = azurerm_resource_group.main.name
@@ -46,18 +40,8 @@ resource "azurerm_static_web_app" "main" {
   sku_tier            = var.sku_tier
   sku_size            = var.sku_tier
   tags                = local.tags
-
-  # Note: App settings (environment variables) are configured via:
-  # - Azure Portal
-  # - GitHub Actions during deployment
-  # - Or using azurerm_static_web_app_custom_domain for custom domains
 }
 
-# Static Web App Environment Variable (API URL)
-# Note: For Static Web Apps, environment variables are set during build time
-# via GitHub Actions or Azure DevOps. This is documented in the outputs.
-
-# Outputs
 output "resource_group_name" {
   description = "Resource group name"
   value       = azurerm_resource_group.main.name
