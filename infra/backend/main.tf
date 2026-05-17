@@ -1,6 +1,3 @@
-# Azure Backend Infrastructure for Label Verification API
-# Deploys: Resource Group, Container Registry, Container Apps Environment, Container App
-
 terraform {
   required_version = ">= 1.0.0"
 
@@ -19,7 +16,6 @@ provider "azurerm" {
   skip_provider_registration = var.skip_provider_registration
 }
 
-# Locals
 locals {
   name_suffix         = var.name_suffix == "" ? "" : "-${var.name_suffix}"
   resource_prefix     = "${var.project_name}-${var.environment}${local.name_suffix}"
@@ -31,14 +27,12 @@ locals {
   }
 }
 
-# Resource Group
 resource "azurerm_resource_group" "main" {
   name     = local.resource_group_name
   location = var.location
   tags     = local.tags
 }
 
-# Log Analytics Workspace (required for Container Apps)
 resource "azurerm_log_analytics_workspace" "main" {
   name                = "log-${local.resource_prefix}"
   location            = azurerm_resource_group.main.location
@@ -48,7 +42,6 @@ resource "azurerm_log_analytics_workspace" "main" {
   tags                = local.tags
 }
 
-# Azure Container Registry
 resource "azurerm_container_registry" "main" {
   name                = replace("acr${local.resource_prefix}", "-", "")
   resource_group_name = azurerm_resource_group.main.name
@@ -58,7 +51,6 @@ resource "azurerm_container_registry" "main" {
   tags                = local.tags
 }
 
-# Container Apps Environment
 resource "azurerm_container_app_environment" "main" {
   name                       = "cae-${local.resource_prefix}"
   location                   = azurerm_resource_group.main.location
@@ -67,7 +59,6 @@ resource "azurerm_container_app_environment" "main" {
   tags                       = local.tags
 }
 
-# Container App for Backend API
 resource "azurerm_container_app" "api" {
   name                         = "ca-${local.resource_prefix}-api"
   container_app_environment_id = azurerm_container_app_environment.main.id
@@ -75,7 +66,6 @@ resource "azurerm_container_app" "api" {
   revision_mode                = "Single"
   tags                         = local.tags
 
-  # Registry credentials
   registry {
     server               = azurerm_container_registry.main.login_server
     username             = azurerm_container_registry.main.admin_username
@@ -87,33 +77,24 @@ resource "azurerm_container_app" "api" {
     value = azurerm_container_registry.main.admin_password
   }
 
-  # Ingress configuration
-  # Note: Azure Container Apps provides HTTPS by default with managed TLS
   ingress {
     external_enabled = true
     target_port      = 8000
-    transport        = "http" # Internal: container serves HTTP, Azure handles TLS termination
+    transport        = "http"
 
     traffic_weight {
       latest_revision = true
       percentage      = 100
     }
-    # Note: CORS is handled at application level (FastAPI middleware)
   }
 
   template {
-    # Container configuration
-    # Note: EasyOCR/PyTorch on CPU requires significant resources
-    # - 2 vCPU / 4Gi is max for Consumption tier (~8-10s OCR time)
-    # - For faster OCR (~5s), use Dedicated workload profile with 4 vCPU
-    # - Sequential batch processing (max_workers=1) to avoid OOM
     container {
       name   = "api"
       image  = "${azurerm_container_registry.main.login_server}/label-verification-backend:${var.container_image_tag}"
       cpu    = var.container_cpu
       memory = var.container_memory
 
-      # Environment variables (matching backend config.py settings)
       env {
         name  = "MAX_UPLOAD_SIZE_MB"
         value = "15"
@@ -126,7 +107,7 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "MAX_IMAGE_DIMENSION"
-        value = "1024" # Optimized for speed
+        value = "1024"
       }
 
       env {
@@ -136,15 +117,14 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "MAX_WORKERS"
-        value = "1" # Sequential processing - safer on limited CPU
+        value = "1"
       }
 
       env {
         name  = "OCR_MAX_CONCURRENT"
-        value = "1" # Prevent concurrent OCR - CPU bound
+        value = "1"
       }
 
-      # Thread settings for 2 vCPU (Consumption tier max)
       env {
         name  = "OMP_NUM_THREADS"
         value = "2"
@@ -161,12 +141,25 @@ resource "azurerm_container_app" "api" {
       }
 
       env {
-        name  = "TORCH_NUM_THREADS"
+        name  = "BLIS_NUM_THREADS"
         value = "2"
       }
 
-      # Startup probe - give OCR model time to load
-      # Max 10 failures × 30s interval = 5 minutes for model loading
+      env {
+        name  = "FLAGS_enable_pir_api"
+        value = "0"
+      }
+
+      env {
+        name  = "FLAGS_use_mkldnn"
+        value = "1"
+      }
+
+      env {
+        name  = "FLAGS_allocator_strategy"
+        value = "auto_growth"
+      }
+
       startup_probe {
         transport               = "HTTP"
         path                    = "/api/v1/health"
@@ -175,7 +168,6 @@ resource "azurerm_container_app" "api" {
         failure_count_threshold = 10
       }
 
-      # Liveness probe
       liveness_probe {
         transport               = "HTTP"
         path                    = "/api/v1/health"
@@ -184,7 +176,6 @@ resource "azurerm_container_app" "api" {
         failure_count_threshold = 3
       }
 
-      # Readiness probe
       readiness_probe {
         transport               = "HTTP"
         path                    = "/api/v1/health"
@@ -194,7 +185,6 @@ resource "azurerm_container_app" "api" {
       }
     }
 
-    # Scale configuration - min 1 to avoid cold starts
     min_replicas = var.min_replicas
     max_replicas = var.max_replicas
 
@@ -205,7 +195,6 @@ resource "azurerm_container_app" "api" {
   }
 }
 
-# Outputs
 output "resource_group_name" {
   description = "Resource group name"
   value       = azurerm_resource_group.main.name

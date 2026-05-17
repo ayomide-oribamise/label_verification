@@ -1,5 +1,3 @@
-# Variables for Backend Infrastructure
-
 variable "project_name" {
   description = "Project name used for resource naming"
   type        = string
@@ -79,13 +77,13 @@ variable "container_image_tag" {
 variable "container_cpu" {
   description = "CPU cores for container (Consumption tier max: 2.0)"
   type        = number
-  default     = 2.0 # Max for Consumption tier (4 vCPU requires Dedicated profile)
+  default     = 2.0
 }
 
 variable "container_memory" {
   description = "Memory for container (Consumption tier max: 4Gi)"
   type        = string
-  default     = "4Gi" # Max for Consumption tier (8Gi requires Dedicated profile)
+  default     = "4Gi"
 }
 
 variable "min_replicas" {
