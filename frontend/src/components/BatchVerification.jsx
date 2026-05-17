@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
 import axios from 'axios'
 import LoadingSpinner from './LoadingSpinner'
@@ -10,6 +10,70 @@ import sampleBeer from '../assets/sample_beer.png'
 import sampleWine from '../assets/sample_wine.png'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const BATCH_FIELDS = [
+  'filename',
+  'brand_name',
+  'class_type',
+  'abv_percent',
+  'net_contents_ml',
+  'bottler_producer',
+  'country_of_origin',
+  'has_warning',
+]
+
+const emptyApplicationData = () => ({
+  brand_name: '',
+  class_type: '',
+  abv_percent: '',
+  net_contents_ml: '',
+  bottler_producer: '',
+  country_of_origin: '',
+  has_warning: true,
+})
+
+const applicationDataFromCsv = (row) => ({
+  brand_name: row.brand_name || '',
+  class_type: row.class_type || '',
+  abv_percent: row.abv_percent || '',
+  net_contents_ml: row.net_contents_ml || '',
+  bottler_producer: row.bottler_producer || '',
+  country_of_origin: row.country_of_origin || '',
+  has_warning: row.has_warning !== 'false' && row.has_warning !== false,
+})
+
+const csvEscape = (value) => {
+  const text = String(value ?? '')
+  if (/[",\n]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`
+  }
+  return text
+}
+
+const parseCSVLine = (line) => {
+  const values = []
+  let current = ''
+  let inQuotes = false
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i]
+    const next = line[i + 1]
+
+    if (char === '"' && inQuotes && next === '"') {
+      current += '"'
+      i += 1
+    } else if (char === '"') {
+      inQuotes = !inQuotes
+    } else if (char === ',' && !inQuotes) {
+      values.push(current.trim())
+      current = ''
+    } else {
+      current += char
+    }
+  }
+
+  values.push(current.trim())
+  return values
+}
 
 // Helper: find best matching CSV row for an image filename
 const findMatchingCsvRow = (imageName, csvRows, imageIndex = -1) => {
@@ -52,6 +116,8 @@ const SAMPLE_LABELS = [
       class_type: 'Kentucky Straight Bourbon Whiskey',
       abv_percent: '45',
       net_contents_ml: '750',
+      bottler_producer: 'Bottled by Old Tom Distillery, Louisville, KY',
+      country_of_origin: '',
       has_warning: true,
     }
   },
@@ -65,6 +131,8 @@ const SAMPLE_LABELS = [
       class_type: 'India Pale Ale',
       abv_percent: '6.8',
       net_contents_ml: '355',
+      bottler_producer: 'Brewed by Mountain Brew Co, Denver, CO',
+      country_of_origin: '',
       has_warning: true,
     }
   },
@@ -78,6 +146,8 @@ const SAMPLE_LABELS = [
       class_type: 'Cabernet Sauvignon',
       abv_percent: '14.5',
       net_contents_ml: '750',
+      bottler_producer: 'Produced and bottled by Silver Oak Cellars, Oakville, CA',
+      country_of_origin: '',
       has_warning: true,
     }
   },
@@ -97,7 +167,6 @@ function BatchVerification() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [progress, setProgress] = useState(0)
-  const [mode, setMode] = useState('upload') // 'upload', 'edit', 'review'
 
   // Image dropzone
   const onDropImages = useCallback((acceptedFiles, rejectedFiles) => {
@@ -126,21 +195,9 @@ function BatchVerification() {
           // Try to match with existing CSV data (use index for row-order matching)
           const csvMatch = findMatchingCsvRow(file.name, csvData, existingCount + idx)
           if (csvMatch) {
-            newData[file.name] = {
-              brand_name: csvMatch.brand_name || '',
-              class_type: csvMatch.class_type || '',
-              abv_percent: csvMatch.abv_percent || '',
-              net_contents_ml: csvMatch.net_contents_ml || '',
-              has_warning: csvMatch.has_warning !== 'false' && csvMatch.has_warning !== false,
-            }
+            newData[file.name] = applicationDataFromCsv(csvMatch)
           } else {
-            newData[file.name] = {
-              brand_name: '',
-              class_type: '',
-              abv_percent: '',
-              net_contents_ml: '',
-              has_warning: true,
-            }
+            newData[file.name] = emptyApplicationData()
           }
         }
       })
@@ -181,31 +238,19 @@ function BatchVerification() {
           images.forEach((img, index) => {
             const csvMatch = findMatchingCsvRow(img.name, parsed, index)
             if (csvMatch) {
-              newImageData[img.name] = {
-                brand_name: csvMatch.brand_name || '',
-                class_type: csvMatch.class_type || '',
-                abv_percent: csvMatch.abv_percent || '',
-                net_contents_ml: csvMatch.net_contents_ml || '',
-                has_warning: csvMatch.has_warning !== 'false' && csvMatch.has_warning !== false,
-              }
+              newImageData[img.name] = applicationDataFromCsv(csvMatch)
             }
           })
           
           // Also store CSV data keyed by original filename (for future image uploads)
           parsed.forEach(row => {
             if (row.filename && !newImageData[row.filename]) {
-              newImageData[row.filename] = {
-                brand_name: row.brand_name || '',
-                class_type: row.class_type || '',
-                abv_percent: row.abv_percent || '',
-                net_contents_ml: row.net_contents_ml || '',
-                has_warning: row.has_warning !== 'false' && row.has_warning !== false,
-              }
+              newImageData[row.filename] = applicationDataFromCsv(row)
             }
           })
           
           setImageData(newImageData)
-        } catch (err) {
+        } catch {
           setError('Failed to parse CSV file. Please check the format.')
         }
       }
@@ -223,13 +268,13 @@ function BatchVerification() {
 
   // Parse CSV string to array of objects
   const parseCSV = (text) => {
-    const lines = text.trim().split('\n')
+    const lines = text.trim().split(/\r?\n/)
     if (lines.length < 2) return []
     
-    const headers = lines[0].split(',').map(h => h.trim().toLowerCase())
+    const headers = parseCSVLine(lines[0]).map(h => h.trim().toLowerCase())
     
     return lines.slice(1).map(line => {
-      const values = line.split(',').map(v => v.trim())
+      const values = parseCSVLine(line)
       const row = {}
       headers.forEach((header, i) => {
         row[header] = values[i] || ''
@@ -237,18 +282,6 @@ function BatchVerification() {
       return row
     })
   }
-
-  // Calculate matching status
-  const matchStatus = useMemo(() => {
-    const imageNames = new Set(images.map(img => img.name))
-    const csvNames = csvData ? new Set(csvData.map(row => row.filename)) : new Set()
-    
-    return {
-      matched: images.filter(img => csvNames.has(img.name) || imageData[img.name]?.brand_name),
-      unmatchedImages: images.filter(img => !csvNames.has(img.name) && !imageData[img.name]?.brand_name),
-      unmatchedCsv: csvData ? csvData.filter(row => !imageNames.has(row.filename)) : [],
-    }
-  }, [images, csvData, imageData])
 
   const removeImage = (index) => {
     const img = images[index]
@@ -315,7 +348,6 @@ function BatchVerification() {
 
       if (response.data.success) {
         setResults(response.data)
-        setMode('upload')
       } else {
         setError(response.data.error || 'Batch verification failed.')
       }
@@ -335,7 +367,6 @@ function BatchVerification() {
   }
 
   const generateCSV = () => {
-    const headers = ['filename', 'brand_name', 'class_type', 'abv_percent', 'net_contents_ml', 'has_warning']
     const rows = images.map(img => {
       const data = imageData[img.name] || {}
       return [
@@ -344,10 +375,12 @@ function BatchVerification() {
         data.class_type || '',
         data.abv_percent || '',
         data.net_contents_ml || '',
+        data.bottler_producer || '',
+        data.country_of_origin || '',
         data.has_warning !== false ? 'true' : 'false',
-      ].join(',')
+      ].map(csvEscape).join(',')
     })
-    return [headers.join(','), ...rows].join('\n')
+    return [BATCH_FIELDS.join(','), ...rows].join('\n')
   }
 
   const downloadSmartTemplate = () => {
@@ -362,9 +395,9 @@ function BatchVerification() {
   }
 
   const downloadGenericTemplate = () => {
-    const csvContent = `filename,brand_name,class_type,abv_percent,net_contents_ml,has_warning
-label_01.png,BRAND NAME,Beverage Type,45,750,true
-label_02.png,ANOTHER BRAND,Another Type,40,1000,true`
+    const csvContent = `filename,brand_name,class_type,abv_percent,net_contents_ml,bottler_producer,country_of_origin,has_warning
+label_01.png,BRAND NAME,Beverage Type,45,750,"Bottled by Producer Name, City, ST",,true
+label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, City, ST",France,true`
     
     const blob = new Blob([csvContent], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
@@ -391,7 +424,6 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,true`
     setImageData({})
     setResults(null)
     setError(null)
-    setMode('upload')
   }
 
   // Load all sample labels for quick batch testing
@@ -430,8 +462,8 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,true`
 
       {/* Quick Test Section */}
       <div className="quick-test-section">
-        <h3>🚀 Try Batch Verification in less than 10 seconds</h3>
-        <p>Load all 3 sample labels with pre-filled application data:</p>
+        <h3>🚀 Check batch throughput against the 5-second target</h3>
+        <p>Load the sample labels with pre-filled data, then review per-label processing time in the results.</p>
         <div className="sample-cards">
           {SAMPLE_LABELS.map(sample => (
             <div key={sample.id} className="sample-card-preview">
@@ -525,6 +557,7 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,true`
                   <th>Class/Type</th>
                   <th>ABV %</th>
                   <th>mL</th>
+                  <th>Producer / Origin</th>
                   <th>Warning</th>
                   <th></th>
                 </tr>
@@ -572,6 +605,22 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,true`
                         placeholder="e.g., 45"
                         className="table-input table-input-small"
                         step="0.1"
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="text"
+                        value={imageData[img.name]?.bottler_producer || ''}
+                        onChange={(e) => updateImageData(img.name, 'bottler_producer', e.target.value)}
+                        placeholder="Bottled by..."
+                        className="table-input"
+                      />
+                      <input
+                        type="text"
+                        value={imageData[img.name]?.country_of_origin || ''}
+                        onChange={(e) => updateImageData(img.name, 'country_of_origin', e.target.value)}
+                        placeholder="Import origin"
+                        className="table-input table-input-stacked"
                       />
                     </td>
                     <td>

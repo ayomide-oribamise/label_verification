@@ -47,6 +47,8 @@ Output is in the `dist/` folder.
 - Application data form with validation
 - Real-time verification results
 - Field-by-field status display (match/review/mismatch)
+- Per-label processing time shown against the 5-second usability target
+- Optional bottler/producer and country-of-origin fields for broader TTB checks
 
 ### Batch Verification
 - Multiple image upload
@@ -55,6 +57,7 @@ Output is in the `dist/` folder.
 - Download CSV template with uploaded filenames
 - Progress tracking and results summary
 - Export results to CSV
+- CSV templates include bottler/producer and import-origin fields
 
 ### Sample Data
 Pre-loaded sample labels and application data for demonstration:
@@ -112,3 +115,4 @@ frontend/
 - Responsive layout for desktop and tablet
 - Clear status indicators (green/yellow/red)
 - Loading states and error handling
+- Copy avoids overpromising demo speed and frames results against the stakeholder's 5-second target
