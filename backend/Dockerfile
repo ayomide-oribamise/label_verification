@@ -1,10 +1,10 @@
 # Label Verification Backend Dockerfile
 # Using PaddleOCR 2.7.x with enhanced accuracy features
 # - Thread control for CPU inference
-# - Pre-downloaded models
+# - Runtime model initialization
 # - Optimized for Azure Container Apps
 
-FROM python:3.11-slim AS builder
+FROM python:3.10-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -25,11 +25,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY requirements.txt .
 
-RUN python -m pip install --upgrade pip setuptools wheel && \
+RUN python -m pip install "pip<25" "setuptools<75" "wheel<0.46" && \
     python -m pip install --no-cache-dir -r requirements.txt
 
 # Production stage
-FROM python:3.11-slim
+FROM python:3.10-slim
 
 # Thread control for CPU inference
 # These are defaults - override via Container App env vars for different CPU configs
@@ -66,14 +66,13 @@ RUN useradd --create-home --shell /bin/bash app
 WORKDIR /home/app
 
 # Copy installed packages from builder
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Pre-download PaddleOCR models during build (not at runtime)
-# This makes container startup faster and more predictable
-# Also set thread limits during model download.
+# Create PaddleOCR cache directory. Do not import PaddleOCR during image build:
+# cross-platform linux/amd64 builds can execute under QEMU locally, and Paddle's
+# native runtime may crash there with an illegal instruction before Azure runs it.
 RUN mkdir -p /home/app/.paddleocr && \
-    python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False, show_log=False, det_db_box_thresh=0.3, det_db_unclip_ratio=2.0)" && \
     chown -R app:app /home/app/.paddleocr
 
 # Copy application code
@@ -85,8 +84,8 @@ USER app
 # Expose port
 EXPOSE 8000
 
-# Health check with longer start period for model loading
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+# Health check with longer start period for first-run model initialization
+HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \
     CMD curl -f http://localhost:8000/api/v1/health || exit 1
 
 # Run with uvicorn (single worker - model is memory heavy)
