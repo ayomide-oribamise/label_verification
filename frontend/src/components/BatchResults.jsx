@@ -8,7 +8,10 @@ function BatchResults({ results }) {
       case 'match':
         return '✅'
       case 'review':
+      case 'not_visible_on_label':
+      case 'low_confidence':
         return '⚠️'
+      case 'incomplete':
       case 'mismatch':
       case 'not_found':
         return '❌'
@@ -22,7 +25,10 @@ function BatchResults({ results }) {
       case 'match':
         return 'status-match'
       case 'review':
+      case 'not_visible_on_label':
+      case 'low_confidence':
         return 'status-review'
+      case 'incomplete':
       case 'mismatch':
       case 'not_found':
         return 'status-mismatch'
@@ -37,13 +43,33 @@ function BatchResults({ results }) {
     return `${seconds}s, ${processingTimeMs <= 5000 ? 'meets' : 'exceeds'} 5s target`
   }
 
+  const formatStatusLabel = (status) => {
+    switch (status) {
+      case 'match':
+        return 'verified'
+      case 'review':
+        return 'review'
+      case 'incomplete':
+        return 'incomplete'
+      case 'not_visible_on_label':
+        return 'not visible'
+      case 'low_confidence':
+        return 'low confidence'
+      case 'mismatch':
+        return 'mismatch'
+      default:
+        return status?.replaceAll('_', ' ') || 'unknown'
+    }
+  }
+
   const exportResults = () => {
     const csvRows = [
-      ['Filename', 'Status', 'Summary', 'Error'].join(','),
+      ['Filename', 'Status', 'Summary', 'Issues', 'Error'].join(','),
       ...rowResults.map(r => [
         r.filename,
         r.success ? r.result?.overall_status : 'error',
         r.success ? r.result?.summary?.replace(/[\n,]/g, ' ') : '',
+        r.success ? r.result?.issues?.join(' | ') || '' : '',
         r.error || ''
       ].map(v => `"${v}"`).join(','))
     ]
@@ -109,7 +135,7 @@ function BatchResults({ results }) {
                 <td className="status">
                   {row.success ? (
                     <span className="status-badge">
-                      {getStatusIcon(row.result?.overall_status)} {row.result?.overall_status}
+                      {getStatusIcon(row.result?.overall_status)} {formatStatusLabel(row.result?.overall_status)}
                     </span>
                   ) : (
                     <span className="status-badge status-error">❌ Error</span>
@@ -123,11 +149,26 @@ function BatchResults({ results }) {
                         {row.result?.processing_time_ms && ` (${formatSpeedTarget(row.result.processing_time_ms)})`}
                       </summary>
                       <div className="row-details">
+                        {row.result?.issues?.length > 0 && (
+                          <div className="row-issues">
+                            <strong>Review notes</strong>
+                            <ul>
+                              {row.result.issues.map((issue, i) => (
+                                <li key={i}>{issue}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
                         {row.result?.fields?.map((field, i) => (
                           <div key={i} className={`field-row ${getStatusClass(field.status)}`}>
                             <span className="field-icon">{getStatusIcon(field.status)}</span>
                             <span className="field-name">{field.field_name}:</span>
-                            <span className="field-message">{field.message}</span>
+                            <span className="field-message">
+                              {field.message}
+                              {field.guidance && (
+                                <span className="field-guidance">{field.guidance}</span>
+                              )}
+                            </span>
                           </div>
                         ))}
                       </div>

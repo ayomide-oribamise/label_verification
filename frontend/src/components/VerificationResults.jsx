@@ -4,15 +4,27 @@ function VerificationResults({ results }) {
   }
 
   const { result, extracted } = results
-  const { overall_status, fields, summary, processing_time_ms } = result
+  const { overall_status, fields, summary, processing_time_ms, issues = [] } = result
   const metFiveSecondTarget = processing_time_ms && processing_time_ms <= 5000
+  const contradictionFields = fields.filter((field) => field.status === 'mismatch')
+  const primaryMissingFields = fields.filter((field) => (
+    field.status === 'not_visible_on_label' && field.category === 'required_on_primary'
+  ))
+  const reviewFields = fields.filter((field) => (
+    field.status === 'review'
+    || field.status === 'low_confidence'
+    || (field.status === 'not_visible_on_label' && field.category !== 'required_on_primary')
+  ))
 
   const getStatusIcon = (status) => {
     switch (status) {
       case 'match':
         return '✅'
       case 'review':
+      case 'not_visible_on_label':
+      case 'low_confidence':
         return '⚠️'
+      case 'incomplete':
       case 'mismatch':
       case 'not_found':
         return '❌'
@@ -26,7 +38,10 @@ function VerificationResults({ results }) {
       case 'match':
         return 'status-match'
       case 'review':
+      case 'not_visible_on_label':
+      case 'low_confidence':
         return 'status-review'
+      case 'incomplete':
       case 'mismatch':
       case 'not_found':
         return 'status-mismatch'
@@ -38,13 +53,26 @@ function VerificationResults({ results }) {
   const getOverallStatusText = (status) => {
     switch (status) {
       case 'match':
-        return 'All Fields Verified'
+        return 'Verified'
       case 'review':
-        return 'Review Recommended'
+        return 'Review Required'
+      case 'incomplete':
+        return 'Cannot Verify'
       case 'mismatch':
-        return 'Verification Failed'
+        return 'Cannot Verify'
       default:
         return 'Unknown Status'
+    }
+  }
+
+  const formatStatusLabel = (status) => {
+    switch (status) {
+      case 'not_visible_on_label':
+        return 'not visible'
+      case 'low_confidence':
+        return 'low confidence'
+      default:
+        return status?.replaceAll('_', ' ') || 'unknown'
     }
   }
 
@@ -68,8 +96,42 @@ function VerificationResults({ results }) {
       </div>
 
       {/* Summary */}
-      {summary && (
-        <div className="results-summary">
+      {(summary || issues.length > 0) && (
+        <div className={`results-summary ${getStatusClass(overall_status)}`}>
+          {issues.length > 0 && (
+            <div className="issue-groups">
+              {contradictionFields.length > 0 && (
+                <div className="issue-group">
+                  <h4>Contradictions</h4>
+                  <ul>
+                    {contradictionFields.map((field, index) => (
+                      <li key={index}>{field.message}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {primaryMissingFields.length > 0 && (
+                <div className="issue-group">
+                  <h4>Missing Primary-Label Fields</h4>
+                  <ul>
+                    {primaryMissingFields.map((field, index) => (
+                      <li key={index}>{field.field_name}: {field.guidance || field.message}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {reviewFields.length > 0 && (
+                <div className="issue-group">
+                  <h4>Review Checklist</h4>
+                  <ul>
+                    {reviewFields.map((field, index) => (
+                      <li key={index}>{field.field_name}: {field.guidance || field.message}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
           <pre>{summary}</pre>
         </div>
       )}
@@ -93,7 +155,7 @@ function VerificationResults({ results }) {
                 <td className="field-name">{field.field_name}</td>
                 <td className="field-status">
                   <span className="status-badge">
-                    {getStatusIcon(field.status)} {field.status}
+                    {getStatusIcon(field.status)} {formatStatusLabel(field.status)}
                   </span>
                 </td>
                 <td className="field-extracted">
@@ -102,7 +164,12 @@ function VerificationResults({ results }) {
                 <td className="field-expected">
                   {field.expected_value || '-'}
                 </td>
-                <td className="field-message">{field.message}</td>
+                <td className="field-message">
+                  <span>{field.message}</span>
+                  {field.guidance && (
+                    <span className="field-guidance">{field.guidance}</span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
