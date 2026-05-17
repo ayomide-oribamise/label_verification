@@ -1,0 +1,21 @@
+# Copy to terraform.tfvars and use the same name_suffix as backend.
+
+project_name = "labelverify"
+environment  = "dev"
+location     = "eastus2"
+
+# Use the same new Azure account/subscription as backend.
+# Keep these in terraform.tfvars; do not commit real account IDs.
+subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id       = "00000000-0000-0000-0000-000000000000"
+
+name_suffix = "a1"
+sku_tier    = "Free"
+
+# Optional: uncomment to force a specific new resource group name instead of
+# the generated rg-labelverify-dev-a1-frontend.
+# resource_group_name = "rg-labelverify-dev-a1-frontend"
+
+# Leave false for a normal new subscription. Set true only if provider
+# registration is managed externally by the Azure tenant/admin.
+skip_provider_registration = false

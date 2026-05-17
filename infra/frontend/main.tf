@@ -7,19 +7,23 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 3.80"
+      version = "~> 4.0"
     }
   }
 }
 
 provider "azurerm" {
   features {}
-  skip_provider_registration = true
+  subscription_id            = var.subscription_id
+  tenant_id                  = var.tenant_id
+  skip_provider_registration = var.skip_provider_registration
 }
 
 # Locals
 locals {
-  resource_prefix = "${var.project_name}-${var.environment}"
+  name_suffix         = var.name_suffix == "" ? "" : "-${var.name_suffix}"
+  resource_prefix     = "${var.project_name}-${var.environment}${local.name_suffix}"
+  resource_group_name = var.resource_group_name == "" ? "rg-${local.resource_prefix}-frontend" : var.resource_group_name
   tags = {
     Project     = "Label Verification"
     Environment = var.environment
@@ -29,7 +33,7 @@ locals {
 
 # Resource Group (can be shared with backend or separate)
 resource "azurerm_resource_group" "main" {
-  name     = "rg-${local.resource_prefix}-frontend"
+  name     = local.resource_group_name
   location = var.location
   tags     = local.tags
 }

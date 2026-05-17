@@ -7,19 +7,23 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 3.80"
+      version = "~> 3.80.0"
     }
   }
 }
 
 provider "azurerm" {
   features {}
-  skip_provider_registration = true
+  subscription_id            = var.subscription_id
+  tenant_id                  = var.tenant_id
+  skip_provider_registration = var.skip_provider_registration
 }
 
 # Locals
 locals {
-  resource_prefix = "${var.project_name}-${var.environment}"
+  name_suffix         = var.name_suffix == "" ? "" : "-${var.name_suffix}"
+  resource_prefix     = "${var.project_name}-${var.environment}${local.name_suffix}"
+  resource_group_name = var.resource_group_name == "" ? "rg-${local.resource_prefix}" : var.resource_group_name
   tags = {
     Project     = "Label Verification"
     Environment = var.environment
@@ -29,7 +33,7 @@ locals {
 
 # Resource Group
 resource "azurerm_resource_group" "main" {
-  name     = "rg-${local.resource_prefix}"
+  name     = local.resource_group_name
   location = var.location
   tags     = local.tags
 }
@@ -88,7 +92,7 @@ resource "azurerm_container_app" "api" {
   ingress {
     external_enabled = true
     target_port      = 8000
-    transport        = "http"    # Internal: container serves HTTP, Azure handles TLS termination
+    transport        = "http" # Internal: container serves HTTP, Azure handles TLS termination
 
     traffic_weight {
       latest_revision = true
@@ -111,13 +115,18 @@ resource "azurerm_container_app" "api" {
 
       # Environment variables (matching backend config.py settings)
       env {
-        name  = "MAX_IMAGE_SIZE_MB"
+        name  = "MAX_UPLOAD_SIZE_MB"
+        value = "15"
+      }
+
+      env {
+        name  = "MAX_CONVERTED_SIZE_MB"
         value = "3"
       }
 
       env {
         name  = "MAX_IMAGE_DIMENSION"
-        value = "1024"  # Optimized for speed
+        value = "1024" # Optimized for speed
       }
 
       env {
@@ -127,12 +136,12 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "MAX_WORKERS"
-        value = "1"  # Sequential processing - safer on limited CPU
+        value = "1" # Sequential processing - safer on limited CPU
       }
 
       env {
         name  = "OCR_MAX_CONCURRENT"
-        value = "1"  # Prevent concurrent OCR - CPU bound
+        value = "1" # Prevent concurrent OCR - CPU bound
       }
 
       # Thread settings for 2 vCPU (Consumption tier max)
@@ -205,6 +214,11 @@ output "resource_group_name" {
 output "container_registry_login_server" {
   description = "ACR login server"
   value       = azurerm_container_registry.main.login_server
+}
+
+output "container_registry_name" {
+  description = "ACR resource name for az acr login"
+  value       = azurerm_container_registry.main.name
 }
 
 output "container_registry_admin_username" {

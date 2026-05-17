@@ -42,11 +42,40 @@ infra/
 
 - Azure CLI installed and authenticated (`az login`)
 - Terraform >= 1.0.0
-- Azure subscription with required resource providers registered
+- Docker installed for the backend image build/push
+- Node.js/npm installed for the frontend build/deploy
+- New Azure account/subscription ID and tenant ID
+- A short lowercase `name_suffix` for fresh redeploys, because Azure Container Registry names are globally unique
 
 ## Deployment
 
+For a new Azure account, copy both example variable files first:
+
+```bash
+cp infra/backend/terraform.tfvars.example infra/backend/terraform.tfvars
+cp infra/frontend/terraform.tfvars.example infra/frontend/terraform.tfvars
+```
+
+Edit both files and set:
+
+- `subscription_id` and `tenant_id` for the new Azure account
+- the same unique `name_suffix`, for example your initials plus a run number
+- optional `resource_group_name` values if you want exact new resource group names instead of the generated names
+
+Use a fresh Terraform state for the new account. Do not reuse local state from an old subscription when switching accounts, because Terraform state is tied to the resources it already created.
+
+If you prefer Azure CLI context instead of explicit provider IDs, leave `subscription_id` and `tenant_id` as `null`, then run:
+
+```bash
+az login
+az account set --subscription <new-subscription-id>
+```
+
+This repository uses branch-per-concern layout. The `infra` branch contains only Terraform. Build and deploy commands for app code must be run from a separate checkout or worktree of the matching `backend` or `frontend` branch.
+
 ### Backend
+
+The first backend deployment is a two-step flow: create the registry and platform resources, push the image, then create/update the Container App. This avoids a fresh Azure Container App trying to pull an image before the new registry contains one.
 
 ```bash
 cd infra/backend
@@ -54,33 +83,43 @@ cd infra/backend
 # Initialize Terraform
 terraform init
 
-# Preview changes
-terraform plan
-
-# Deploy
-terraform apply
+# Bootstrap Azure resources that do not require the backend image yet
+terraform apply \
+  -target=azurerm_resource_group.main \
+  -target=azurerm_log_analytics_workspace.main \
+  -target=azurerm_container_registry.main \
+  -target=azurerm_container_app_environment.main
 ```
 
-After deployment, note the outputs:
+After bootstrap, note the output:
+
 - `container_registry_login_server` - ACR URL for pushing images
-- `api_url` - Backend API endpoint
+- `container_registry_name` - ACR name for `az acr login`
 
 ### Push Docker Image
 
 ```bash
-# Login to ACR
-az acr login --name <acr_name>
+# Login to ACR.
+az acr login --name <container_registry_name>
 
-# Build and push (from backend directory)
+# Build and push from a separate checkout/worktree of the backend branch
+cd backend
 docker build --platform linux/amd64 -t <acr_login_server>/label-verification-backend:latest .
 docker push <acr_login_server>/label-verification-backend:latest
-
-# Update container app with new image
-az containerapp update \
-  --name ca-labelverify-dev-api \
-  --resource-group rg-labelverify-dev \
-  --image <acr_login_server>/label-verification-backend:latest
 ```
+
+Then finish backend Terraform:
+
+```bash
+# Return to the infra checkout/worktree
+cd infra/backend
+terraform plan
+terraform apply
+```
+
+After final backend apply, note the output:
+
+- `api_url` - Backend API endpoint for the frontend build
 
 ### Frontend
 
@@ -97,13 +136,15 @@ Deploy the built frontend:
 # Get deployment token
 terraform output -raw deployment_token
 
-# Deploy using SWA CLI
-cd ../../frontend
-npm run build
+# Build from a separate checkout/worktree of the frontend branch
+cd frontend
+VITE_API_URL=<backend_api_url_from_backend_output> npm run build
 npx @azure/static-web-apps-cli deploy ./dist \
   --deployment-token <token> \
   --env production
 ```
+
+Important: `VITE_API_URL` is a Vite build-time variable. Set it when running `npm run build`; setting it only in the Azure portal after build will not update the already-built JavaScript bundle.
 
 ## Configuration
 
@@ -114,10 +155,15 @@ npx @azure/static-web-apps-cli deploy ./dist \
 | `project_name` | labelverify | Project name for resource naming |
 | `environment` | dev | Environment (dev/staging/prod) |
 | `location` | eastus | Azure region |
+| `subscription_id` | null | New Azure subscription ID; falls back to Azure CLI if null |
+| `tenant_id` | null | Azure tenant ID; falls back to Azure CLI if null |
+| `name_suffix` | blank | Optional suffix for globally unique resource names |
+| `resource_group_name` | blank | Optional exact backend resource group name |
 | `container_cpu` | 2.0 | CPU cores (max 2.0 for Consumption tier) |
 | `container_memory` | 4Gi | Memory (max 4Gi for Consumption tier) |
 | `min_replicas` | 1 | Minimum replicas |
 | `max_replicas` | 3 | Maximum replicas |
+| `skip_provider_registration` | false | Set true only when Azure provider registration is managed externally |
 
 ### Frontend Variables
 
@@ -126,7 +172,12 @@ npx @azure/static-web-apps-cli deploy ./dist \
 | `project_name` | labelverify | Project name for resource naming |
 | `environment` | dev | Environment (dev/staging/prod) |
 | `location` | eastus2 | Azure region (SWA limited regions) |
+| `subscription_id` | null | New Azure subscription ID; falls back to Azure CLI if null |
+| `tenant_id` | null | Azure tenant ID; falls back to Azure CLI if null |
+| `name_suffix` | blank | Optional suffix for globally unique resource names |
+| `resource_group_name` | blank | Optional exact frontend resource group name |
 | `sku_tier` | Free | SKU tier (Free/Standard) |
+| `skip_provider_registration` | false | Set true only when Azure provider registration is managed externally |
 
 ## Resource Limits
 
