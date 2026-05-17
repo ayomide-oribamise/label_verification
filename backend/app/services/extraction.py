@@ -502,6 +502,8 @@ class ExtractionResult:
     class_type: ExtractedField
     abv_percent: ExtractedField
     net_contents_ml: ExtractedField
+    bottler_producer: ExtractedField
+    country_of_origin: ExtractedField
     government_warning: ExtractedField
     raw_text: str
     overall_confidence: float
@@ -558,6 +560,8 @@ class FieldExtractor:
         class_type = self._extract_class_type(ocr_result, brand)
         abv = self._extract_abv(ocr_result)
         net_contents = self._extract_net_contents(ocr_result)
+        bottler_producer = self._extract_bottler_producer(ocr_result)
+        country_of_origin = self._extract_country_of_origin(ocr_result)
         warning = self._extract_government_warning(ocr_result)
         
         # Calculate overall confidence
@@ -566,6 +570,8 @@ class FieldExtractor:
             class_type.confidence,
             abv.confidence,
             net_contents.confidence,
+            bottler_producer.confidence,
+            country_of_origin.confidence,
             warning.confidence,
         ]
         # Filter out zero confidences (fields not found)
@@ -577,6 +583,8 @@ class FieldExtractor:
             class_type=class_type,
             abv_percent=abv,
             net_contents_ml=net_contents,
+            bottler_producer=bottler_producer,
+            country_of_origin=country_of_origin,
             government_warning=warning,
             raw_text=ocr_result.raw_text,
             overall_confidence=overall_confidence,
@@ -631,23 +639,21 @@ class FieldExtractor:
             field_result.net_contents_confidence,
             ocr_result
         )
+        bottler_producer = self._extract_bottler_producer(ocr_result)
+        country_of_origin = self._extract_country_of_origin(ocr_result)
         
-        # Use keyword-based warning detection (from OCR layer)
-        # This is more reliable than trying to parse dense warning text
-        if field_result.warning_detected:
+        warning = self._extract_warning_from_zone(
+            field_result.warning_text,
+            field_result.warning_confidence,
+            ocr_result
+        )
+        if field_result.warning_detected and warning.value == "not_found":
             warning = ExtractedField(
-                value="detected",
-                confidence=0.95,
+                value="partial",
+                confidence=0.70,
                 source_boxes=[],
                 extraction_method="keyword_detection",
-                notes="Government warning detected via keywords"
-            )
-        else:
-            # Fall back to zone extraction
-            warning = self._extract_warning_from_zone(
-                field_result.warning_text,
-                field_result.warning_confidence,
-                ocr_result
+                notes="Warning keywords detected, but full statement could not be confirmed"
             )
         
         # Calculate overall confidence
@@ -656,6 +662,8 @@ class FieldExtractor:
             class_type.confidence,
             abv.confidence,
             net_contents.confidence,
+            bottler_producer.confidence,
+            country_of_origin.confidence,
             warning.confidence,
         ]
         valid_confidences = [c for c in confidences if c > 0]
@@ -666,6 +674,8 @@ class FieldExtractor:
             class_type=class_type,
             abv_percent=abv,
             net_contents_ml=net_contents,
+            bottler_producer=bottler_producer,
+            country_of_origin=country_of_origin,
             government_warning=warning,
             raw_text=field_result.combined_raw_text,
             overall_confidence=overall_confidence,
@@ -941,33 +951,13 @@ class FieldExtractor:
         """Extract government warning from the warning zone text."""
         if not zone_text:
             return self._extract_government_warning(ocr_result)
-        
-        # Check for warning keywords in zone text
-        warning_indicators = [
-            "government warning",
-            "surgeon general",
-            "birth defects",
-            "pregnancy",
-            "alcoholic beverages",
-            "impairs",
-            "machinery",
-            "health problems"
-        ]
-        
-        text_lower = zone_text.lower()
-        matches = sum(1 for indicator in warning_indicators if indicator in text_lower)
-        
-        if matches >= 2:  # At least 2 indicators
-            return ExtractedField(
-                value="detected",
-                confidence=min(0.95, zone_confidence + 0.1 * matches),
-                source_boxes=[],
-                extraction_method="zone_warning",
-                notes=f"Government warning detected in zone ({matches} indicators)"
-            )
-        
-        # Fall back to standard extraction
-        return self._extract_government_warning(ocr_result)
+
+        zone_result = OCRResult(
+            boxes=[],
+            raw_text=f"{zone_text} {ocr_result.raw_text}",
+            average_confidence=zone_confidence or ocr_result.average_confidence,
+        )
+        return self._extract_government_warning(zone_result)
     
     def _extract_brand(self, ocr_result: OCRResult) -> ExtractedField:
         """
@@ -1656,6 +1646,81 @@ class FieldExtractor:
             extraction_method="regex",
             notes="No net contents pattern matched"
         )
+
+    def _extract_bottler_producer(self, ocr_result: OCRResult) -> ExtractedField:
+        """
+        Extract bottler/producer name and address text.
+
+        This is intentionally pattern-based for the prototype. It captures common
+        alcohol label statements such as "BOTTLED BY", "PRODUCED BY",
+        "BREWED BY", and "VINTED BY" plus the following address line.
+        """
+        raw_text = ocr_result.raw_text
+        patterns = [
+            r"\b((?:BOTTLED|PRODUCED|BREWED|DISTILLED|VINTED|CELLARED|IMPORTED)\s+BY\s+[^.]+?)(?=\s+(?:GOVERNMENT\s+WARNING|CONTAINS|ALC|ALCOHOL|PRODUCED\s+IN|PRODUCT\s+OF|$))",
+            r"\b((?:BOTTLED|PRODUCED|BREWED|DISTILLED|VINTED|CELLARED|IMPORTED)\s+AND\s+(?:BOTTLED|PRODUCED|BREWED|DISTILLED)\s+BY\s+[^.]+?)(?=\s+(?:GOVERNMENT\s+WARNING|CONTAINS|ALC|ALCOHOL|PRODUCT\s+OF|$))",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, raw_text, re.IGNORECASE)
+            if match:
+                value = re.sub(r"\s+", " ", match.group(1)).strip(" ,.;")
+                source_box = self._find_box_containing(ocr_result.boxes, value)
+                confidence = source_box.confidence if source_box else 0.75
+                return ExtractedField(
+                    value=value,
+                    confidence=confidence,
+                    source_boxes=[source_box] if source_box else [],
+                    extraction_method="regex_bottler_producer",
+                    notes=f"Matched producer statement: {value}"
+                )
+
+        return ExtractedField(
+            value=None,
+            confidence=0.0,
+            extraction_method="regex_bottler_producer",
+            notes="No bottler/producer statement found"
+        )
+
+    def _extract_country_of_origin(self, ocr_result: OCRResult) -> ExtractedField:
+        """Extract country-of-origin statements for imported products."""
+        raw_text = ocr_result.raw_text
+        patterns = [
+            r"\bPRODUCT\s+OF\s+([A-Z][A-Z\s]{2,40})\b",
+            r"\bPRODUCED\s+IN\s+([A-Z][A-Z\s]{2,40})\b",
+            r"\bMADE\s+IN\s+([A-Z][A-Z\s]{2,40})\b",
+            r"\bIMPORTED\s+FROM\s+([A-Z][A-Z\s]{2,40})\b",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, raw_text, re.IGNORECASE)
+            if match:
+                country = re.sub(r"\s+", " ", match.group(1)).strip(" ,.;")
+                country = re.split(
+                    r"\s+(?:IMPORTED|BOTTLED|PRODUCED|BY|GOVERNMENT|WARNING|CONTAINS|ALC|ALCOHOL|NET|750|375|355)\b",
+                    country,
+                    maxsplit=1,
+                    flags=re.IGNORECASE,
+                )[0].strip(" ,.;")
+                if len(country) < 3:
+                    continue
+
+                source_box = self._find_box_containing(ocr_result.boxes, match.group(0))
+                confidence = source_box.confidence if source_box else 0.80
+                return ExtractedField(
+                    value=country.title(),
+                    confidence=confidence,
+                    source_boxes=[source_box] if source_box else [],
+                    extraction_method="regex_country_of_origin",
+                    notes=f"Matched country-of-origin statement: {match.group(0)}"
+                )
+
+        return ExtractedField(
+            value=None,
+            confidence=0.0,
+            extraction_method="regex_country_of_origin",
+            notes="No country-of-origin statement found"
+        )
     
     def _extract_government_warning(self, ocr_result: OCRResult) -> ExtractedField:
         """
@@ -1670,13 +1735,12 @@ class FieldExtractor:
         
         # Canonicalize: uppercase, normalize whitespace
         canonical_text = self._canonicalize_text(raw_text)
-        canonical_warning = self._canonicalize_text(GOVERNMENT_WARNING_CANONICAL)
-        
         # Check for key phrases
         has_gov_warning = "GOVERNMENT WARNING" in canonical_text
         has_surgeon_general = "SURGEON GENERAL" in canonical_text
         has_pregnancy = "PREGNANCY" in canonical_text or "BIRTH DEFECTS" in canonical_text
         has_machinery = "MACHINERY" in canonical_text or "DRIVE A CAR" in canonical_text
+        has_exact_prefix = bool(re.search(r"\bGOVERNMENT\s+WARNING\s*:", raw_text))
         
         # Score based on presence of key components
         score = sum([
@@ -1700,13 +1764,15 @@ class FieldExtractor:
             else:
                 confidence = score
             
-            # Determine status
-            if score >= 0.75:
+            # Determine status. The assessment calls out exact warning wording
+            # and all-caps "GOVERNMENT WARNING:" as review-critical, so only
+            # mark a clean detection when the key components and prefix are present.
+            if score >= 0.75 and has_exact_prefix:
                 status = "detected"
-                notes = "Government warning detected"
+                notes = "Government warning detected with required all-caps prefix"
             else:
                 status = "partial"
-                notes = "Partial warning text detected - manual review recommended"
+                notes = "Partial warning text detected - verify exact wording, all-caps prefix, and label formatting"
             
             return ExtractedField(
                 value=status,

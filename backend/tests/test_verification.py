@@ -17,6 +17,8 @@ def make_extraction_result(
     class_type: str = None,
     abv: str = None,
     net_contents: str = None,
+    bottler_producer: str = None,
+    country_of_origin: str = None,
     warning: str = "not_found",
     confidence: float = 0.95
 ) -> ExtractionResult:
@@ -40,6 +42,16 @@ def make_extraction_result(
         net_contents_ml=ExtractedField(
             value=net_contents,
             confidence=confidence if net_contents else 0.0,
+            extraction_method="test"
+        ),
+        bottler_producer=ExtractedField(
+            value=bottler_producer,
+            confidence=confidence if bottler_producer else 0.0,
+            extraction_method="test"
+        ),
+        country_of_origin=ExtractedField(
+            value=country_of_origin,
+            confidence=confidence if country_of_origin else 0.0,
             extraction_method="test"
         ),
         government_warning=ExtractedField(
@@ -167,6 +179,52 @@ class TestNetContentsVerification:
         
         net_field = next(f for f in result.fields if f.field_name == "Net Contents")
         assert net_field.status == VerificationStatus.NOT_FOUND
+
+
+class TestAdditionalComplianceFields:
+    """Test optional TTB context fields."""
+
+    def test_bottler_producer_match(self, service):
+        """Test bottler/producer fuzzy text matching."""
+        extraction = make_extraction_result(
+            brand="TEST",
+            bottler_producer="BOTTLED BY OLD TOM DISTILLERY LOUISVILLE KY"
+        )
+        result = service.verify(
+            extraction,
+            expected_brand="TEST",
+            expected_bottler_producer="Bottled by Old Tom Distillery, Louisville, Kentucky"
+        )
+
+        field = next(f for f in result.fields if f.field_name == "Bottler/Producer")
+        assert field.status == VerificationStatus.MATCH
+
+    def test_country_of_origin_mismatch(self, service):
+        """Test imported-product country mismatch."""
+        extraction = make_extraction_result(
+            brand="TEST",
+            country_of_origin="France"
+        )
+        result = service.verify(
+            extraction,
+            expected_brand="TEST",
+            expected_country_of_origin="Italy"
+        )
+
+        field = next(f for f in result.fields if f.field_name == "Country of Origin")
+        assert field.status == VerificationStatus.MISMATCH
+
+    def test_country_of_origin_not_found(self, service):
+        """Test missing country when expected."""
+        extraction = make_extraction_result(brand="TEST")
+        result = service.verify(
+            extraction,
+            expected_brand="TEST",
+            expected_country_of_origin="France"
+        )
+
+        field = next(f for f in result.fields if f.field_name == "Country of Origin")
+        assert field.status == VerificationStatus.NOT_FOUND
 
 
 class TestGovernmentWarningVerification:

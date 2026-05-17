@@ -30,9 +30,9 @@ label2.png,JACK DANIELS"""
     
     def test_valid_csv_all_columns(self, parser):
         """Test parsing CSV with all columns."""
-        csv_content = """filename,brand_name,class_type,abv_percent,net_contents_ml,has_warning
-label1.png,OLD TOM DISTILLERY,Kentucky Bourbon,45,750,true
-label2.png,JACK DANIELS,Tennessee Whiskey,40,1000,false"""
+        csv_content = """filename,brand_name,class_type,abv_percent,net_contents_ml,bottler_producer,country_of_origin,has_warning
+label1.png,OLD TOM DISTILLERY,Kentucky Bourbon,45,750,"Bottled by Old Tom Distillery, Louisville, KY",,true
+label2.png,JACK DANIELS,Tennessee Whiskey,40,1000,"Bottled by Jack Daniel Distillery, Lynchburg, TN",USA,false"""
         
         rows, errors = parser.parse(csv_content)
         
@@ -42,8 +42,11 @@ label2.png,JACK DANIELS,Tennessee Whiskey,40,1000,false"""
         assert rows[0].class_type == "Kentucky Bourbon"
         assert rows[0].abv_percent == 45.0
         assert rows[0].net_contents_ml == 750.0
+        assert rows[0].bottler_producer == "Bottled by Old Tom Distillery, Louisville, KY"
+        assert rows[0].country_of_origin is None
         assert rows[0].has_warning is True
         
+        assert rows[1].country_of_origin == "USA"
         assert rows[1].has_warning is False
     
     def test_case_insensitive_columns(self, parser):

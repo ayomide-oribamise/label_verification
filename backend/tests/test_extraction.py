@@ -237,6 +237,49 @@ class TestGovernmentWarningExtraction:
         # Should still detect due to canonicalization
         assert result.government_warning.value in ["detected", "partial"]
 
+    def test_title_case_warning_requires_review(self, extractor):
+        """Test title-case warning prefix is review, not a clean pass."""
+        warning_text = (
+            "Government Warning: (1) According to the Surgeon General, women should not "
+            "drink alcoholic beverages during pregnancy because of the risk of birth defects. "
+            "(2) Consumption of alcoholic beverages impairs your ability to drive a car or "
+            "operate machinery, and may cause health problems."
+        )
+
+        ocr_result = make_ocr_result([
+            ("BRAND", 0, 50),
+            (warning_text, 100, 30),
+        ])
+
+        result = extractor.extract_all(ocr_result)
+        assert result.government_warning.value == "partial"
+
+
+class TestBottlerProducerExtraction:
+    """Test bottler/producer extraction."""
+
+    def test_bottled_by_statement(self, extractor):
+        """Test extraction of bottler/producer statement."""
+        ocr_result = make_ocr_result([
+            ("OLD TOM DISTILLERY", 0, 50),
+            ("BOTTLED BY OLD TOM DISTILLERY LOUISVILLE KY", 100, 20),
+            ("GOVERNMENT WARNING: According to the Surgeon General", 140, 20),
+        ])
+
+        result = extractor.extract_all(ocr_result)
+        assert result.bottler_producer.value is not None
+        assert "OLD TOM DISTILLERY" in result.bottler_producer.value
+
+    def test_country_of_origin_statement(self, extractor):
+        """Test extraction of country of origin for imports."""
+        ocr_result = make_ocr_result([
+            ("CHATEAU TEST", 0, 50),
+            ("PRODUCT OF FRANCE IMPORTED BY TEST IMPORTS", 100, 20),
+        ])
+
+        result = extractor.extract_all(ocr_result)
+        assert result.country_of_origin.value == "France"
+
 
 class TestFullExtraction:
     """Test full extraction pipeline."""
@@ -259,6 +302,8 @@ class TestFullExtraction:
         assert "Bourbon" in result.class_type.value or "Whiskey" in result.class_type.value
         assert result.abv_percent.value == "45.0"
         assert result.net_contents_ml.value == "750.0"
+        assert result.bottler_producer.value is None
+        assert result.country_of_origin.value is None
         assert result.government_warning.value in ["detected", "partial"]
         
         # Check overall confidence
@@ -273,6 +318,8 @@ class TestFullExtraction:
         assert result.class_type.value is None
         assert result.abv_percent.value is None
         assert result.net_contents_ml.value is None
+        assert result.bottler_producer.value is None
+        assert result.country_of_origin.value is None
         assert result.overall_confidence == 0.0
 
 

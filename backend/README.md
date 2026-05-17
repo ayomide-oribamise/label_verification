@@ -33,6 +33,8 @@ curl -X POST "http://localhost:8000/api/v1/verify" \
   -F "class_type=Kentucky Straight Bourbon Whiskey" \
   -F "abv_percent=45" \
   -F "net_contents_ml=750" \
+  -F "bottler_producer=Bottled by Old Tom Distillery, Louisville, KY" \
+  -F "country_of_origin=" \
   -F "has_warning=true"
 ```
 
@@ -47,9 +49,9 @@ curl -X POST "http://localhost:8000/api/v1/verify/batch" \
 
 **CSV Format:**
 ```csv
-image_filename,brand_name,class_type,abv_percent,net_contents_ml,has_warning
-sample_bourbon.png,OLD TOM DISTILLERY,Kentucky Straight Bourbon Whiskey,45,750,true
-sample_wine.png,SILVER OAK,Cabernet Sauvignon,14.5,750,true
+filename,brand_name,class_type,abv_percent,net_contents_ml,bottler_producer,country_of_origin,has_warning
+sample_bourbon.png,OLD TOM DISTILLERY,Kentucky Straight Bourbon Whiskey,45,750,"Bottled by Old Tom Distillery, Louisville, KY",,true
+sample_wine.png,SILVER OAK,Cabernet Sauvignon,14.5,750,"Produced and bottled by Silver Oak Cellars, Oakville, CA",,true
 ```
 
 ## Docker
@@ -109,7 +111,7 @@ Preprocessing (resize, contrast, ROI detection)
     ↓
 OCR (EasyOCR - detect once, slice by position)
     ↓
-Field Extraction (brand, class/type, ABV, net contents, warning)
+Field Extraction (brand, class/type, ABV, net contents, bottler/producer, origin, warning)
     ↓
 Verification (fuzzy matching against application data)
     ↓
@@ -127,6 +129,8 @@ Results (match/review/mismatch per field)
 4. **Fuzzy Matching**: Token-set similarity for brand matching, semantic classification for beverage types
 
 5. **Candidate Rescoring**: During verification, rescores all extraction candidates against expected values
+
+6. **Assessment Coverage Expansion**: Optional bottler/producer and country-of-origin checks are supported for labels/applications that include those fields. The government warning check now treats partial wording or incorrect `GOVERNMENT WARNING:` casing as a review condition rather than a clean pass.
 
 ## Testing
 

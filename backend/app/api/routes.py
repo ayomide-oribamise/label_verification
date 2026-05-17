@@ -66,6 +66,8 @@ async def verify_label(
     class_type: Optional[str] = Form(None, description="Expected class/type"),
     abv_percent: Optional[float] = Form(None, description="Expected ABV percentage"),
     net_contents_ml: Optional[float] = Form(None, description="Expected net contents in mL"),
+    bottler_producer: Optional[str] = Form(None, description="Expected bottler/producer name and address"),
+    country_of_origin: Optional[str] = Form(None, description="Expected country of origin for imports"),
     has_warning: bool = Form(True, description="Whether label should have government warning"),
 ):
     """
@@ -158,6 +160,8 @@ async def verify_label(
             class_type=extraction_result.class_type.value,
             abv_percent=float(extraction_result.abv_percent.value) if extraction_result.abv_percent.value else None,
             net_contents_ml=float(extraction_result.net_contents_ml.value) if extraction_result.net_contents_ml.value else None,
+            bottler_producer=extraction_result.bottler_producer.value,
+            country_of_origin=extraction_result.country_of_origin.value,
             government_warning=extraction_result.government_warning.value,
             raw_text=ocr_result.raw_text,
             ocr_confidence=extraction_result.overall_confidence
@@ -171,6 +175,8 @@ async def verify_label(
             expected_class_type=class_type,
             expected_abv=abv_percent,
             expected_net_contents=net_contents_ml,
+            expected_bottler_producer=bottler_producer,
+            expected_country_of_origin=country_of_origin,
             expected_has_warning=has_warning,
         )
         verify_ms = int((time.time() - verify_start) * 1000)
@@ -305,6 +311,8 @@ async def extract_only(
             class_type=extraction_result.class_type.value,
             abv_percent=float(extraction_result.abv_percent.value) if extraction_result.abv_percent.value else None,
             net_contents_ml=float(extraction_result.net_contents_ml.value) if extraction_result.net_contents_ml.value else None,
+            bottler_producer=extraction_result.bottler_producer.value,
+            country_of_origin=extraction_result.country_of_origin.value,
             government_warning=extraction_result.government_warning.value,
             raw_text=ocr_result.raw_text,
             ocr_confidence=extraction_result.overall_confidence
@@ -348,13 +356,13 @@ async def verify_batch(
     
     CSV format:
     - Required columns: filename, brand_name
-    - Optional columns: class_type, abv_percent, net_contents_ml, has_warning
+    - Optional columns: class_type, abv_percent, net_contents_ml, bottler_producer, country_of_origin, has_warning
     
     Example CSV:
     ```
-    filename,brand_name,class_type,abv_percent,net_contents_ml,has_warning
-    label1.png,OLD TOM DISTILLERY,Kentucky Bourbon,45,750,true
-    label2.png,JACK DANIELS,Tennessee Whiskey,40,1000,true
+    filename,brand_name,class_type,abv_percent,net_contents_ml,bottler_producer,country_of_origin,has_warning
+    label1.png,OLD TOM DISTILLERY,Kentucky Bourbon,45,750,"Bottled by Old Tom Distillery, Louisville, KY",,true
+    label2.png,JACK DANIELS,Tennessee Whiskey,40,1000,"Bottled by Jack Daniel Distillery, Lynchburg, TN",,true
     ```
     
     Returns verification results for each label.
