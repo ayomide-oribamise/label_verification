@@ -1,6 +1,6 @@
 # Label Verification Backend
 
-FastAPI backend for AI-powered alcohol label verification using EasyOCR.
+FastAPI backend for AI-powered alcohol label verification using PaddleOCR.
 
 ## Quick Start
 
@@ -90,7 +90,8 @@ backend/
 │   │   └── schemas.py       # Pydantic request/response models
 │   └── services/
 │       ├── preprocessing.py # Image preprocessing pipeline
-│       ├── ocr.py           # EasyOCR integration
+│       ├── ocr.py           # OCR orchestration and field-targeted slicing
+│       ├── ocr_paddle.py    # PaddleOCR adapter
 │       ├── extraction.py    # Field extraction from OCR results
 │       ├── verification.py  # Field matching and verification
 │       └── batch.py         # Batch processing logic
@@ -109,18 +110,18 @@ Image Upload
     ↓
 Preprocessing (resize, contrast, ROI detection)
     ↓
-OCR (EasyOCR - detect once, slice by position)
+OCR (PaddleOCR - detect once, slice by position)
     ↓
 Field Extraction (brand, class/type, ABV, net contents, bottler/producer, origin, warning)
     ↓
 Verification (fuzzy matching against application data)
     ↓
-Results (match/review/mismatch per field)
+Results (match/review/incomplete/mismatch per field)
 ```
 
 ### Key Design Decisions
 
-1. **Offline-First OCR**: Uses EasyOCR (PyTorch-based) for offline processing without cloud API dependencies
+1. **Offline-First OCR**: Uses PaddleOCR 2.7.x for offline processing without cloud API dependencies. Versions are pinned to the pre-PIR PaddlePaddle runtime for CPU/AMD64 stability.
 
 2. **Detect-Once Architecture**: Single OCR pass on full image, then slice detected text boxes by position for field extraction
 
@@ -130,7 +131,9 @@ Results (match/review/mismatch per field)
 
 5. **Candidate Rescoring**: During verification, rescores all extraction candidates against expected values
 
-6. **Assessment Coverage Expansion**: Optional bottler/producer and country-of-origin checks are supported for labels/applications that include those fields. The government warning check now treats partial wording or incorrect `GOVERNMENT WARNING:` casing as a review condition rather than a clean pass.
+6. **Assessment Coverage Expansion**: Bottler/producer, country-of-origin, and government-warning checks understand that some required information can appear on front, back, or neck labels. Missing flexible-location fields are returned as review guidance instead of hard mismatches.
+
+7. **Status Policy**: Primary-label fields missing from the uploaded image produce `incomplete`; extracted contradictions produce `mismatch`; flexible-location fields absent from one uploaded image produce `review` with guidance to check additional panels.
 
 ## Testing
 

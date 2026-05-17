@@ -338,10 +338,12 @@ def _process_single_label(args: Tuple) -> Dict[str, Any]:
             {
                 "field_name": f.field_name,
                 "status": f.status.value,
+                "category": f.category.value if f.category else None,
                 "extracted_value": f.extracted_value,
                 "expected_value": f.expected_value,
                 "confidence": f.confidence,
-                "message": f.message + (f" {f.details}" if f.details else "")
+                "message": f.message + (f" {f.details}" if f.details else ""),
+                "guidance": f.guidance,
             }
             for f in verification_result.fields
         ]
@@ -354,7 +356,8 @@ def _process_single_label(args: Tuple) -> Dict[str, Any]:
                 "overall_status": verification_result.overall_status.value,
                 "fields": field_results,
                 "summary": verification_result.summary,
-                "processing_time_ms": processing_time
+                "processing_time_ms": processing_time,
+                "issues": verification_result.issues,
             }
         }
         
@@ -570,10 +573,12 @@ class SequentialBatchProcessor:
                     {
                         "field_name": f.field_name,
                         "status": f.status.value,
+                        "category": f.category.value if f.category else None,
                         "extracted_value": f.extracted_value,
                         "expected_value": f.expected_value,
                         "confidence": f.confidence,
-                        "message": f.message + (f" {f.details}" if f.details else "")
+                        "message": f.message + (f" {f.details}" if f.details else ""),
+                        "guidance": f.guidance,
                     }
                     for f in verification_result.fields
                 ]
@@ -586,7 +591,8 @@ class SequentialBatchProcessor:
                         "overall_status": verification_result.overall_status.value,
                         "fields": field_results,
                         "summary": verification_result.summary,
-                        "processing_time_ms": processing_time
+                        "processing_time_ms": processing_time,
+                        "issues": verification_result.issues,
                     }
                 })
                 

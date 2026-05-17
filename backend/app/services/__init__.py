@@ -3,7 +3,7 @@
 from .preprocessing import ImagePreprocessor
 from .ocr import OCRService, OCRResult, OCRBox
 from .extraction import FieldExtractor, ExtractedField, ExtractionResult, extract_abv_value, extract_net_contents_ml
-from .verification import VerificationService, VerificationResult, FieldVerification, VerificationStatus
+from .verification import FieldCategory, VerificationService, VerificationResult, FieldVerification, VerificationStatus
 from .batch import CSVParser, CSVRow, CSVValidationError, BatchProcessor, SequentialBatchProcessor
 
 __all__ = [
@@ -20,6 +20,7 @@ __all__ = [
     "VerificationResult",
     "FieldVerification",
     "VerificationStatus",
+    "FieldCategory",
     "CSVParser",
     "CSVRow",
     "CSVValidationError",

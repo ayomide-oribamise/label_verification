@@ -2,6 +2,7 @@
 
 from .schemas import (
     VerificationStatus,
+    FieldCategory,
     FieldResult,
     VerificationResult,
     ExtractedFields,
@@ -16,6 +17,7 @@ from .schemas import (
 
 __all__ = [
     "VerificationStatus",
+    "FieldCategory",
     "FieldResult",
     "VerificationResult",
     "ExtractedFields",

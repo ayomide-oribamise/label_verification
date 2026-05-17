@@ -1,7 +1,7 @@
 """Tests for verification service."""
 
 import pytest
-from app.services.verification import VerificationService, VerificationStatus
+from app.services.verification import FieldCategory, VerificationService, VerificationStatus
 from app.services.extraction import ExtractionResult, ExtractedField
 from app.services.ocr import OCRBox
 
@@ -114,7 +114,8 @@ class TestBrandVerification:
         result = service.verify(extraction, expected_brand="OLD TOM DISTILLERY")
         
         brand_field = next(f for f in result.fields if f.field_name == "Brand Name")
-        assert brand_field.status == VerificationStatus.NOT_FOUND
+        assert brand_field.status == VerificationStatus.NOT_VISIBLE
+        assert brand_field.category == FieldCategory.REQUIRED_ON_PRIMARY
 
 
 class TestABVVerification:
@@ -150,7 +151,8 @@ class TestABVVerification:
         result = service.verify(extraction, expected_brand="TEST", expected_abv=45.0)
         
         abv_field = next(f for f in result.fields if f.field_name == "Alcohol Content (ABV)")
-        assert abv_field.status == VerificationStatus.NOT_FOUND
+        assert abv_field.status == VerificationStatus.NOT_VISIBLE
+        assert abv_field.category == FieldCategory.REQUIRED_ON_PRIMARY
 
 
 class TestNetContentsVerification:
@@ -178,7 +180,8 @@ class TestNetContentsVerification:
         result = service.verify(extraction, expected_brand="TEST", expected_net_contents=750.0)
         
         net_field = next(f for f in result.fields if f.field_name == "Net Contents")
-        assert net_field.status == VerificationStatus.NOT_FOUND
+        assert net_field.status == VerificationStatus.NOT_VISIBLE
+        assert net_field.category == FieldCategory.REQUIRED_ON_PRIMARY
 
 
 class TestAdditionalComplianceFields:
@@ -224,7 +227,9 @@ class TestAdditionalComplianceFields:
         )
 
         field = next(f for f in result.fields if f.field_name == "Country of Origin")
-        assert field.status == VerificationStatus.NOT_FOUND
+        assert field.status == VerificationStatus.NOT_VISIBLE
+        assert field.category == FieldCategory.REQUIRED_ANYWHERE
+        assert field.guidance is not None
 
 
 class TestGovernmentWarningVerification:
@@ -252,7 +257,8 @@ class TestGovernmentWarningVerification:
         result = service.verify(extraction, expected_brand="TEST", expected_has_warning=True)
         
         warning_field = next(f for f in result.fields if f.field_name == "Government Warning")
-        assert warning_field.status == VerificationStatus.MISMATCH
+        assert warning_field.status == VerificationStatus.NOT_VISIBLE
+        assert warning_field.category == FieldCategory.REQUIRED_ANYWHERE
     
     def test_warning_not_required(self, service):
         """Test when warning is not required."""
@@ -351,7 +357,7 @@ class TestPlainEnglishMessages:
         result = service.verify(extraction, expected_brand="TEST", expected_has_warning=True)
         
         warning_field = next(f for f in result.fields if f.field_name == "Government Warning")
-        assert "not detected" in warning_field.message.lower() or "not found" in warning_field.message.lower()
+        assert "not visible" in warning_field.message.lower()
 
 
 class TestEdgeCases:
@@ -375,8 +381,33 @@ class TestEdgeCases:
             expected_has_warning=True
         )
         
-        assert result.overall_status == VerificationStatus.MISMATCH
+        assert result.overall_status == VerificationStatus.INCOMPLETE
         assert result.failed_count >= 1
+
+    def test_old_tom_missing_bottler_is_review_not_failure(self, service):
+        """Flexible-location fields missing from one image should be review."""
+        extraction = make_extraction_result(
+            brand="DISTILLERY OLD TOM",
+            class_type="Kentucky Straight Bourbon Whiskey",
+            abv="45.0",
+            net_contents="750.0",
+            warning="detected"
+        )
+        result = service.verify(
+            extraction,
+            expected_brand="OLD TOM DISTILLERY",
+            expected_class_type="Kentucky Straight Bourbon Whiskey",
+            expected_abv=45.0,
+            expected_net_contents=750.0,
+            expected_bottler_producer="Bottled by Old Tom Distillery, Louisville, KY",
+            expected_has_warning=True
+        )
+
+        field = next(f for f in result.fields if f.field_name == "Bottler/Producer")
+        assert field.status == VerificationStatus.NOT_VISIBLE
+        assert field.category == FieldCategory.REQUIRED_ANYWHERE
+        assert result.overall_status == VerificationStatus.REVIEW
+        assert result.failed_count == 0
     
     def test_optional_fields_not_provided(self, service):
         """Test when optional expected fields are not provided."""

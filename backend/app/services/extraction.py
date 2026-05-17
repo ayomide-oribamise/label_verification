@@ -1655,16 +1655,18 @@ class FieldExtractor:
         alcohol label statements such as "BOTTLED BY", "PRODUCED BY",
         "BREWED BY", and "VINTED BY" plus the following address line.
         """
-        raw_text = ocr_result.raw_text
+        raw_text = self._normalize_ocr_statement_text(ocr_result.raw_text)
         patterns = [
-            r"\b((?:BOTTLED|PRODUCED|BREWED|DISTILLED|VINTED|CELLARED|IMPORTED)\s+BY\s+[^.]+?)(?=\s+(?:GOVERNMENT\s+WARNING|CONTAINS|ALC|ALCOHOL|PRODUCED\s+IN|PRODUCT\s+OF|$))",
-            r"\b((?:BOTTLED|PRODUCED|BREWED|DISTILLED|VINTED|CELLARED|IMPORTED)\s+AND\s+(?:BOTTLED|PRODUCED|BREWED|DISTILLED)\s+BY\s+[^.]+?)(?=\s+(?:GOVERNMENT\s+WARNING|CONTAINS|ALC|ALCOHOL|PRODUCT\s+OF|$))",
+            r"\b((?:PRODUCED|BOTTLED|BREWED|DISTILLED|VINTED|CELLARED|IMPORTED)\s+(?:AND|&)\s+(?:BOTTLED|PRODUCED|BREWED|DISTILLED|CELLARED)\s+BY\s+.+?)(?=\s+(?:GOVERNMENT\s+WARNING|CONTAINS|ALC|ALCOHOL|PRODUCT\s+OF|PRODUCED\s+IN|NET\s+CONTENTS?|750|375|355|$))",
+            r"\b((?:BOTTLED|PRODUCED|BREWED|DISTILLED|VINTED|CELLARED|IMPORTED|PACKED)\s+(?:BY|FOR)\s+.+?)(?=\s+(?:GOVERNMENT\s+WARNING|CONTAINS|ALC|ALCOHOL|PRODUCT\s+OF|PRODUCED\s+IN|NET\s+CONTENTS?|750|375|355|$))",
         ]
 
         for pattern in patterns:
             match = re.search(pattern, raw_text, re.IGNORECASE)
             if match:
-                value = re.sub(r"\s+", " ", match.group(1)).strip(" ,.;")
+                value = self._trim_bottler_statement(match.group(1))
+                if not self._is_valid_bottler_statement(value):
+                    continue
                 source_box = self._find_box_containing(ocr_result.boxes, value)
                 confidence = source_box.confidence if source_box else 0.75
                 return ExtractedField(
@@ -1675,6 +1677,10 @@ class FieldExtractor:
                     notes=f"Matched producer statement: {value}"
                 )
 
+        line_result = self._extract_bottler_producer_from_lines(ocr_result)
+        if line_result.value:
+            return line_result
+
         return ExtractedField(
             value=None,
             confidence=0.0,
@@ -1682,9 +1688,107 @@ class FieldExtractor:
             notes="No bottler/producer statement found"
         )
 
+    def _extract_bottler_producer_from_lines(self, ocr_result: OCRResult) -> ExtractedField:
+        """Recover bottler/producer statements split across OCR boxes/lines."""
+        if not ocr_result.boxes:
+            return ExtractedField(value=None, confidence=0.0, extraction_method="line_bottler_producer")
+
+        sorted_boxes = sorted(ocr_result.boxes, key=lambda b: (b.top, b.left))
+        trigger_pattern = re.compile(
+            r"\b(?:PRODUCED|BOTTLED|BREWED|DISTILLED|VINTED|CELLARED|IMPORTED|PACKED)"
+            r"(?:\s+(?:AND|&)\s+(?:BOTTLED|PRODUCED|BREWED|DISTILLED|CELLARED))?\s+(?:BY|FOR)\b",
+            re.IGNORECASE,
+        )
+        stop_pattern = re.compile(
+            r"\b(?:GOVERNMENT\s+WARNING|CONTAINS|ALC|ALCOHOL|NET\s+CONTENTS?|PRODUCT\s+OF|PRODUCED\s+IN)\b",
+            re.IGNORECASE,
+        )
+
+        for index, box in enumerate(sorted_boxes):
+            normalized_line = self._normalize_ocr_statement_text(box.text)
+            if not trigger_pattern.search(normalized_line):
+                continue
+
+            parts = [normalized_line]
+            source_boxes = [box]
+
+            # Name/address statements commonly wrap over one or two following lines.
+            for next_box in sorted_boxes[index + 1:index + 4]:
+                next_line = self._normalize_ocr_statement_text(next_box.text)
+                if not next_line or stop_pattern.search(next_line):
+                    break
+                if self._looks_like_field_value(next_line):
+                    break
+                parts.append(next_line)
+                source_boxes.append(next_box)
+
+            value = self._trim_bottler_statement(" ".join(parts))
+            if not self._is_valid_bottler_statement(value):
+                continue
+
+            confidence = sum(b.confidence for b in source_boxes) / len(source_boxes)
+            return ExtractedField(
+                value=value,
+                confidence=confidence,
+                source_boxes=source_boxes,
+                extraction_method="line_bottler_producer",
+                notes=f"Matched split producer statement: {value}"
+            )
+
+        return ExtractedField(value=None, confidence=0.0, extraction_method="line_bottler_producer")
+
+    def _normalize_ocr_statement_text(self, text: str) -> str:
+        """Normalize OCR statement text without losing useful address punctuation."""
+        text = re.sub(r"[\r\n]+", " ", text or "")
+        text = text.replace("|", "I")
+        replacements = {
+            r"\bB0TTLED\b": "BOTTLED",
+            r"\bBOTT1ED\b": "BOTTLED",
+            r"\bPR0DUCED\b": "PRODUCED",
+            r"\bBREVVED\b": "BREWED",
+            r"\bG0VERNMENT\b": "GOVERNMENT",
+            r"\bWARNlNG\b": "WARNING",
+            r"\bWARMING\b": "WARNING",
+        }
+        for pattern, replacement in replacements.items():
+            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", text).strip(" ,.;")
+
+    def _trim_bottler_statement(self, text: str) -> str:
+        """Stop a producer statement before unrelated label fields."""
+        value = re.sub(r"\s+", " ", text).strip(" ,.;")
+        value = re.split(
+            r"\s+(?=\d+(?:\.\d+)?\s*%|\d+(?:\.\d+)?\s*(?:ML|CL|L|OZ)\b|GOVERNMENT\s+WARNING|CONTAINS|ALC|ALCOHOL|NET\s+CONTENTS?|PRODUCT\s+OF|PRODUCED\s+IN)",
+            value,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        return value.strip(" ,.;")
+
+    def _is_valid_bottler_statement(self, text: str) -> bool:
+        """Reject short or field-like false positives."""
+        if not text or len(text) < 12:
+            return False
+        normalized = self._normalize_ocr_statement_text(text).upper()
+        has_trigger = re.search(
+            r"\b(?:PRODUCED|BOTTLED|BREWED|DISTILLED|VINTED|CELLARED|IMPORTED|PACKED)"
+            r"(?:\s+(?:AND|&)\s+(?:BOTTLED|PRODUCED|BREWED|DISTILLED|CELLARED))?\s+(?:BY|FOR)\b",
+            normalized,
+        )
+        has_name_after_trigger = len(normalized.split()) >= 4
+        return bool(has_trigger and has_name_after_trigger)
+
+    def _looks_like_field_value(self, text: str) -> bool:
+        """Avoid swallowing ABV, net contents, and warning fields as address lines."""
+        return bool(re.search(
+            r"\b(?:\d+(?:\.\d+)?\s*%|\d+(?:\.\d+)?\s*(?:ML|CL|L|OZ)|PROOF|GOVERNMENT\s+WARNING)\b",
+            text,
+            re.IGNORECASE,
+        ))
+
     def _extract_country_of_origin(self, ocr_result: OCRResult) -> ExtractedField:
         """Extract country-of-origin statements for imported products."""
-        raw_text = ocr_result.raw_text
+        raw_text = self._normalize_ocr_statement_text(ocr_result.raw_text)
         patterns = [
             r"\bPRODUCT\s+OF\s+([A-Z][A-Z\s]{2,40})\b",
             r"\bPRODUCED\s+IN\s+([A-Z][A-Z\s]{2,40})\b",
@@ -1740,14 +1844,18 @@ class FieldExtractor:
         has_surgeon_general = "SURGEON GENERAL" in canonical_text
         has_pregnancy = "PREGNANCY" in canonical_text or "BIRTH DEFECTS" in canonical_text
         has_machinery = "MACHINERY" in canonical_text or "DRIVE A CAR" in canonical_text
+        has_health_problems = "HEALTH PROBLEMS" in canonical_text
+        has_women_should_not = "WOMEN SHOULD NOT" in canonical_text or "DRINK ALCOHOLIC BEVERAGES" in canonical_text
         has_exact_prefix = bool(re.search(r"\bGOVERNMENT\s+WARNING\s*:", raw_text))
         
         # Score based on presence of key components
         score = sum([
             has_gov_warning * 0.3,
-            has_surgeon_general * 0.25,
-            has_pregnancy * 0.25,
-            has_machinery * 0.2,
+            has_surgeon_general * 0.2,
+            has_pregnancy * 0.2,
+            has_machinery * 0.15,
+            has_health_problems * 0.1,
+            has_women_should_not * 0.05,
         ])
         
         if score >= 0.5:
@@ -1802,7 +1910,10 @@ class FieldExtractor:
         # Fix common OCR joins
         text = re.sub(r'SURGEONGENERAL', 'SURGEON GENERAL', text)
         text = re.sub(r'GOVERNMENTWARNING', 'GOVERNMENT WARNING', text)
+        text = re.sub(r'GOVERNMENT\s+WARMING', 'GOVERNMENT WARNING', text)
+        text = re.sub(r'G0VERNMENT', 'GOVERNMENT', text)
         text = re.sub(r'BIRTHDEFECTS', 'BIRTH DEFECTS', text)
+        text = re.sub(r'HEALTHPROBLEMS', 'HEALTH PROBLEMS', text)
         return text.strip()
     
     def _find_box_containing(

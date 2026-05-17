@@ -237,6 +237,22 @@ class TestGovernmentWarningExtraction:
         # Should still detect due to canonicalization
         assert result.government_warning.value in ["detected", "partial"]
 
+    def test_warning_with_ocr_damaged_prefix(self, extractor):
+        """Test warning detection when OCR misreads the warning heading."""
+        warning_text = (
+            "GOVERNMENT WARMING: According to the Surgeon General, women should not "
+            "drink alcoholic beverages during pregnancy because of birth defects. "
+            "Consumption impairs your ability to drive a car and may cause health problems."
+        )
+
+        ocr_result = make_ocr_result([
+            ("BRAND", 0, 50),
+            (warning_text, 100, 30),
+        ])
+
+        result = extractor.extract_all(ocr_result)
+        assert result.government_warning.value in ["detected", "partial"]
+
     def test_title_case_warning_requires_review(self, extractor):
         """Test title-case warning prefix is review, not a clean pass."""
         warning_text = (
@@ -269,6 +285,34 @@ class TestBottlerProducerExtraction:
         result = extractor.extract_all(ocr_result)
         assert result.bottler_producer.value is not None
         assert "OLD TOM DISTILLERY" in result.bottler_producer.value
+
+    def test_produced_and_bottled_by_statement(self, extractor):
+        """Test combined produced/bottled statements from wine labels."""
+        ocr_result = make_ocr_result([
+            ("SILVER OAK CABERNET SAUVIGNON", 0, 50),
+            ("Produced and bottled by Silver Oak Cellars,", 100, 20),
+            ("Oakville, CA", 125, 20),
+            ("750 mL", 150, 20),
+        ])
+
+        result = extractor.extract_all(ocr_result)
+        assert result.bottler_producer.value is not None
+        assert "Silver Oak Cellars" in result.bottler_producer.value
+        assert "Oakville" in result.bottler_producer.value
+
+    def test_brewed_by_statement_with_address_wrap(self, extractor):
+        """Test beer labels where brewery/address wrap onto the next OCR line."""
+        ocr_result = make_ocr_result([
+            ("MOUNTAIN BREW CO", 0, 50),
+            ("Brewed by Mountain", 100, 20),
+            ("Brew Co, Denver, CO", 125, 20),
+            ("6.8% ALC/VOL", 150, 20),
+        ])
+
+        result = extractor.extract_all(ocr_result)
+        assert result.bottler_producer.value is not None
+        assert "Mountain Brew Co" in result.bottler_producer.value
+        assert "Denver" in result.bottler_producer.value
 
     def test_country_of_origin_statement(self, extractor):
         """Test extraction of country of origin for imports."""

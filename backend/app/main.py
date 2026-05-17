@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
     if ocr_service.initialize():
         logger.info("OCR engine initialized and ready")
         
-        # Warmup: run a tiny inference to fully initialize PyTorch
+        # Warmup: run a tiny inference to fully initialize the OCR runtime
         # This avoids first-request latency
         logger.info("Running OCR warmup inference...")
         try:

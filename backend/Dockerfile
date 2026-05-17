@@ -1,5 +1,5 @@
 # Label Verification Backend Dockerfile
-# Using EasyOCR (PyTorch-based) with enhanced accuracy features
+# Using PaddleOCR 2.7.x with enhanced accuracy features
 # - Thread control for CPU inference
 # - Pre-downloaded models
 # - Optimized for Azure Container Apps
@@ -13,6 +13,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -27,17 +33,19 @@ FROM python:3.11-slim
 
 # Thread control for CPU inference
 # These are defaults - override via Container App env vars for different CPU configs
-# For 4 vCPU: set OMP_NUM_THREADS=4, MKL_NUM_THREADS=4, TORCH_NUM_THREADS=4
+# For 4 vCPU: set OMP_NUM_THREADS=4, MKL_NUM_THREADS=4, OPENBLAS_NUM_THREADS=4
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    EASYOCR_MODULE_PATH=/home/app/.EasyOCR \
+    PADDLEOCR_HOME=/home/app/.paddleocr \
+    FLAGS_enable_pir_api=0 \
+    FLAGS_use_mkldnn=1 \
+    FLAGS_allocator_strategy=auto_growth \
     # Thread settings - defaults for 2 vCPU, override for 4 vCPU
     OMP_NUM_THREADS=2 \
     MKL_NUM_THREADS=2 \
     OPENBLAS_NUM_THREADS=2 \
     BLIS_NUM_THREADS=2 \
-    TORCH_NUM_THREADS=2 \
-    # Disable GPU for PyTorch
+    # Disable GPU visibility
     CUDA_VISIBLE_DEVICES="" \
     # Reduce memory fragmentation
     MALLOC_TRIM_THRESHOLD_=100000
@@ -48,7 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
-    libxrender-dev \
+    libxrender1 \
     libgomp1 \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -61,12 +69,12 @@ WORKDIR /home/app
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Pre-download EasyOCR models during build (not at runtime)
+# Pre-download PaddleOCR models during build (not at runtime)
 # This makes container startup faster and more predictable
-# Also set thread limits during model download
-RUN mkdir -p /home/app/.EasyOCR/model && \
-    python -c "import torch; torch.set_num_threads(1); import easyocr; reader = easyocr.Reader(['en'], gpu=False, model_storage_directory='/home/app/.EasyOCR/model')" && \
-    chown -R app:app /home/app/.EasyOCR
+# Also set thread limits during model download.
+RUN mkdir -p /home/app/.paddleocr && \
+    python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False, show_log=False, det_db_box_thresh=0.3, det_db_unclip_ratio=2.0)" && \
+    chown -R app:app /home/app/.paddleocr
 
 # Copy application code
 COPY --chown=app:app app/ ./app/
