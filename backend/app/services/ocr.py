@@ -1,4 +1,4 @@
-"""OCR service using EasyOCR (PyTorch-based, no PaddlePaddle/PyMuPDF issues).
+"""OCR service using PaddleOCR with detect-once field slicing.
 
 Enhanced with:
 - Confidence gating + fallback passes
@@ -220,7 +220,7 @@ NET_PATTERN = re.compile(r'\d+\.?\d*\s*(ml|cl|l|oz|fl)', re.IGNORECASE)
 
 
 class OCRService:
-    """EasyOCR wrapper service with enhanced accuracy features."""
+    """PaddleOCR wrapper service with enhanced accuracy features."""
     
     _instance: Optional["OCRService"] = None
     _reader = None
@@ -253,34 +253,24 @@ class OCRService:
                 return True
             
             try:
-                import easyocr
-                import torch
                 import os
+                from .ocr_paddle import PaddleOCRBackend
                 
                 # Set thread limits for CPU inference
-                # Use available CPUs (from env or cpu_count), but cap at reasonable limit
-                num_threads = int(os.environ.get('TORCH_NUM_THREADS', min(4, os.cpu_count() or 2)))
-                torch.set_num_threads(num_threads)
-                torch.set_num_interop_threads(1)  # Keep interop threads low
-                
-                logger.info(f"Initializing EasyOCR engine with {num_threads} threads...")
-                
-                # EasyOCR with English language, CPU mode
-                model_dir = os.environ.get('EASYOCR_MODULE_PATH', '/home/app/.EasyOCR/model')
-                
-                self._reader = easyocr.Reader(
-                    ['en'],
-                    gpu=False,
-                    model_storage_directory=model_dir,
-                    verbose=False
-                )
+                num_threads = int(os.environ.get('OMP_NUM_THREADS', min(4, os.cpu_count() or 2)))
+                os.environ.setdefault("FLAGS_enable_pir_api", "0")
+                os.environ.setdefault("FLAGS_use_mkldnn", "1")
+                os.environ.setdefault("FLAGS_allocator_strategy", "auto_growth")
+
+                logger.info(f"Initializing PaddleOCR engine with {num_threads} CPU threads...")
+                self._reader = PaddleOCRBackend()
                 
                 self._initialized = True
-                logger.info("EasyOCR initialized successfully")
+                logger.info("PaddleOCR initialized successfully")
                 return True
                 
             except Exception as e:
-                logger.error(f"Failed to initialize EasyOCR: {e}")
+                logger.error(f"Failed to initialize PaddleOCR: {e}")
                 import traceback
                 traceback.print_exc()
                 return False
@@ -299,7 +289,7 @@ class OCRService:
         """
         Run OCR with confidence gating and fallback strategies.
         
-        Single readtext() call (region OCR was slower due to 3x detection passes).
+        Single OCR call (region OCR was slower due to repeated detection passes).
         
         Args:
             image: Preprocessed image as numpy array
@@ -395,11 +385,11 @@ class OCRService:
         max_dimension: int = 1600
     ) -> OCRResult:
         """
-        DETECT ONCE architecture: Run EasyOCR detection + recognition ONCE.
+        DETECT ONCE architecture: Run PaddleOCR detection + recognition ONCE.
         
         This is the KEY optimization:
         - Detection is expensive (~80% of OCR time)
-        - Running readtext() per zone = running detection per zone
+        - Running OCR per zone = running detection per zone
         - Instead: detect once, get all boxes, then slice by position
         
         Returns:
@@ -419,15 +409,9 @@ class OCRService:
         
         with self._semaphore:
             try:
-                # Single readtext call - detection + recognition in one pass
+                # Single PaddleOCR call - detection + recognition in one pass
                 # This is the ONLY OCR call we make for the entire image
-                results = self._reader.readtext(
-                    image,
-                    decoder='greedy',
-                    batch_size=1,
-                    paragraph=False,
-                    detail=1  # Return bounding boxes
-                )
+                results = self._reader.detect_once(image)
             except Exception as e:
                 logger.error(f"OCR detect_once failed: {e}")
                 return OCRResult.empty()
@@ -439,9 +423,9 @@ class OCRService:
         # Parse results into OCRBox objects
         boxes = []
         for det in results:
-            bbox_points = det[0]
-            text = det[1]
-            conf = det[2]
+            bbox_points = det["bbox"]
+            text = det["text"]
+            conf = det["confidence"]
             
             # Normalize text
             text = self._normalize_text(text)
@@ -851,19 +835,10 @@ class OCRService:
         # Use semaphore for concurrency control
         with self._semaphore:
             try:
-                # Build kwargs for readtext
-                kwargs = {
-                    'decoder': 'greedy',  # Faster than beamsearch
-                    'batch_size': 1,      # Predictable CPU usage
-                    'paragraph': False,   # Don't merge paragraphs (we do our own)
-                }
-                if allowlist:
-                    kwargs['allowlist'] = allowlist
-                if blocklist:
-                    kwargs['blocklist'] = blocklist
-                
-                # EasyOCR accepts BGR or grayscale images directly
-                results = self._reader.readtext(image, **kwargs)
+                if allowlist or blocklist:
+                    logger.debug("PaddleOCR fallback ignores allowlist/blocklist hints")
+
+                results = self._reader.detect_once(image)
                 
                 if not results:
                     logger.warning("OCR returned no results")
@@ -872,9 +847,9 @@ class OCRService:
                 # Parse results into OCRBox objects
                 boxes = []
                 for detection in results:
-                    bbox_points = detection[0]
-                    text = detection[1]
-                    confidence = detection[2]
+                    bbox_points = detection["bbox"]
+                    text = detection["text"]
+                    confidence = detection["confidence"]
                     
                     if not text.strip():
                         continue

@@ -16,10 +16,30 @@ logger = logging.getLogger(__name__)
 class VerificationStatus(str, Enum):
     """Status of a field verification."""
     MATCH = "match"
-    REVIEW = "review"  
+    REVIEW = "review"
     MISMATCH = "mismatch"
-    NOT_FOUND = "not_found"
+    INCOMPLETE = "incomplete"
+    NOT_VISIBLE = "not_visible_on_label"
+    LOW_CONFIDENCE = "low_confidence"
+    NOT_FOUND = "not_found"  # Legacy internal alias; normalized before API response.
     NOT_APPLICABLE = "not_applicable"
+
+
+class FieldCategory(str, Enum):
+    """Whether absence from the uploaded image is a compliance failure."""
+    REQUIRED_ON_PRIMARY = "required_on_primary"
+    REQUIRED_ANYWHERE = "required_anywhere"
+
+
+FIELD_CATEGORIES = {
+    "brand_name": FieldCategory.REQUIRED_ON_PRIMARY,
+    "class_type": FieldCategory.REQUIRED_ON_PRIMARY,
+    "abv": FieldCategory.REQUIRED_ON_PRIMARY,
+    "net_contents": FieldCategory.REQUIRED_ON_PRIMARY,
+    "bottler_producer": FieldCategory.REQUIRED_ANYWHERE,
+    "country_of_origin": FieldCategory.REQUIRED_ANYWHERE,
+    "government_warning": FieldCategory.REQUIRED_ANYWHERE,
+}
 
 
 @dataclass
@@ -32,6 +52,9 @@ class FieldVerification:
     confidence: float
     message: str
     details: Optional[str] = None
+    field_key: Optional[str] = None
+    category: Optional[FieldCategory] = None
+    guidance: Optional[str] = None
 
 
 @dataclass
@@ -43,6 +66,7 @@ class VerificationResult:
     passed_count: int
     review_count: int
     failed_count: int
+    issues: List[str]
 
 
 class VerificationService:
@@ -85,7 +109,7 @@ class VerificationService:
             extraction.brand_name,
             expected_brand
         )
-        fields.append(brand_result)
+        fields.append(self._with_policy(brand_result, "brand_name"))
         
         # Verify class/type (optional)
         if expected_class_type:
@@ -93,7 +117,7 @@ class VerificationService:
                 extraction.class_type,
                 expected_class_type
             )
-            fields.append(class_result)
+            fields.append(self._with_policy(class_result, "class_type"))
         
         # Verify ABV (optional)
         if expected_abv is not None:
@@ -101,7 +125,7 @@ class VerificationService:
                 extraction.abv_percent,
                 expected_abv
             )
-            fields.append(abv_result)
+            fields.append(self._with_policy(abv_result, "abv"))
         
         # Verify net contents (optional)
         if expected_net_contents is not None:
@@ -109,7 +133,7 @@ class VerificationService:
                 extraction.net_contents_ml,
                 expected_net_contents
             )
-            fields.append(net_result)
+            fields.append(self._with_policy(net_result, "net_contents"))
 
         # Verify bottler/producer name and address (optional)
         if expected_bottler_producer:
@@ -119,7 +143,7 @@ class VerificationService:
                 expected=expected_bottler_producer,
                 not_found_message="Bottler/producer statement not detected on label",
             )
-            fields.append(bottler_result)
+            fields.append(self._with_policy(bottler_result, "bottler_producer"))
 
         # Verify country of origin for imports (optional)
         if expected_country_of_origin:
@@ -131,26 +155,31 @@ class VerificationService:
                 match_threshold=0.90,
                 review_threshold=0.75,
             )
-            fields.append(country_result)
+            fields.append(self._with_policy(country_result, "country_of_origin"))
         
         # Verify government warning
         warning_result = self._verify_warning(
             extraction.government_warning,
             expected_has_warning
         )
-        fields.append(warning_result)
+        fields.append(self._with_policy(warning_result, "government_warning"))
         
         # Calculate overall status
         passed = sum(1 for f in fields if f.status == VerificationStatus.MATCH)
-        review = sum(1 for f in fields if f.status == VerificationStatus.REVIEW)
-        failed = sum(1 for f in fields if f.status in [VerificationStatus.MISMATCH, VerificationStatus.NOT_FOUND])
-        
-        if failed > 0:
-            overall_status = VerificationStatus.MISMATCH
-        elif review > 0:
-            overall_status = VerificationStatus.REVIEW
-        else:
-            overall_status = VerificationStatus.MATCH
+        review = sum(1 for f in fields if f.status in [
+            VerificationStatus.REVIEW,
+            VerificationStatus.NOT_VISIBLE,
+            VerificationStatus.LOW_CONFIDENCE,
+        ])
+        failed = sum(1 for f in fields if f.status in [
+            VerificationStatus.MISMATCH,
+            VerificationStatus.INCOMPLETE,
+        ] or (
+            f.status == VerificationStatus.NOT_VISIBLE
+            and f.category == FieldCategory.REQUIRED_ON_PRIMARY
+        ))
+
+        overall_status, issues = self._compute_overall_status(fields)
         
         # Generate summary
         summary = self._generate_summary(fields, overall_status)
@@ -162,7 +191,69 @@ class VerificationService:
             passed_count=passed,
             review_count=review,
             failed_count=failed,
+            issues=issues,
         )
+
+    def _with_policy(self, field: FieldVerification, field_key: str) -> FieldVerification:
+        """Attach TTB visibility policy and guidance to a field result."""
+        category = FIELD_CATEGORIES[field_key]
+        field.field_key = field_key
+        field.category = category
+
+        if field.status == VerificationStatus.NOT_FOUND:
+            field.status = VerificationStatus.NOT_VISIBLE
+            if category == FieldCategory.REQUIRED_ANYWHERE:
+                field.message = f"{field.field_name} not visible on uploaded image"
+                field.guidance = (
+                    "This field can appear on the front, back, or neck label. "
+                    "Check additional label panels before treating it as non-compliant."
+                )
+            else:
+                field.guidance = (
+                    "This field is expected on the primary label. Re-upload a clearer "
+                    "primary-label image or review manually."
+                )
+
+        if field.status == VerificationStatus.REVIEW and field.confidence < 0.65:
+            field.status = VerificationStatus.LOW_CONFIDENCE
+            field.guidance = "OCR confidence is low. Re-upload a higher-resolution image or review manually."
+
+        if field.status == VerificationStatus.REVIEW and not field.guidance:
+            field.guidance = "Human review recommended."
+
+        return field
+
+    def _compute_overall_status(
+        self,
+        fields: List[FieldVerification]
+    ) -> tuple[VerificationStatus, List[str]]:
+        """Compute overall result using field visibility categories."""
+        contradictions: List[str] = []
+        primary_missing: List[str] = []
+        soft_issues: List[str] = []
+
+        for field in fields:
+            if field.status == VerificationStatus.MISMATCH:
+                contradictions.append(f"{field.field_name}: value contradicts application")
+            elif field.status == VerificationStatus.NOT_VISIBLE:
+                if field.category == FieldCategory.REQUIRED_ON_PRIMARY:
+                    primary_missing.append(f"{field.field_name}: missing from primary label")
+                else:
+                    soft_issues.append(
+                        f"{field.field_name}: not on uploaded image - verify other label panels"
+                    )
+            elif field.status == VerificationStatus.LOW_CONFIDENCE:
+                soft_issues.append(f"{field.field_name}: OCR uncertain - human review recommended")
+            elif field.status == VerificationStatus.REVIEW:
+                soft_issues.append(f"{field.field_name}: review recommended")
+
+        if contradictions:
+            return VerificationStatus.MISMATCH, contradictions + primary_missing + soft_issues
+        if primary_missing:
+            return VerificationStatus.INCOMPLETE, primary_missing + soft_issues
+        if soft_issues:
+            return VerificationStatus.REVIEW, soft_issues
+        return VerificationStatus.MATCH, []
     
     def _verify_brand(
         self,
@@ -933,13 +1024,12 @@ class VerificationService:
         else:
             return FieldVerification(
                 field_name="Government Warning",
-                status=VerificationStatus.MISMATCH,
+                status=VerificationStatus.NOT_FOUND,
                 extracted_value="Not found",
                 expected_value="Required",
                 confidence=0.0,
-                message="Government warning not detected",
-                details="Required government health warning not found on label. "
-                        "All alcohol beverages must display the mandatory warning statement."
+                message="Government warning not visible on uploaded image",
+                details="The warning is mandatory, but it may appear on another label panel."
             )
     
     def _normalize_text(self, text: str) -> str:
@@ -968,14 +1058,19 @@ class VerificationService:
         for f in fields:
             if f.status == VerificationStatus.MISMATCH:
                 issues.append(f"❌ {f.field_name}: {f.message}")
-            elif f.status == VerificationStatus.NOT_FOUND:
-                issues.append(f"❌ {f.field_name}: {f.message}")
+            elif f.status == VerificationStatus.NOT_VISIBLE:
+                prefix = "❌" if f.category == FieldCategory.REQUIRED_ON_PRIMARY else "⚠️"
+                issues.append(f"{prefix} {f.field_name}: {f.message}")
+            elif f.status == VerificationStatus.LOW_CONFIDENCE:
+                issues.append(f"⚠️ {f.field_name}: {f.message}")
             elif f.status == VerificationStatus.REVIEW:
                 issues.append(f"⚠️ {f.field_name}: {f.message}")
         
         if overall_status == VerificationStatus.MISMATCH:
             header = "❌ Verification failed. Issues found:"
+        elif overall_status == VerificationStatus.INCOMPLETE:
+            header = "❌ Cannot verify primary label. Required fields are missing:"
         else:
-            header = "⚠️ Review recommended. Potential issues:"
+            header = "⚠️ Review required. Check additional label panels:"
         
         return header + "\n" + "\n".join(issues)

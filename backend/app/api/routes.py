@@ -10,6 +10,7 @@ from ..models import (
     VerificationResult,
     FieldResult,
     VerificationStatus,
+    FieldCategory,
     ExtractedFields,
     ErrorResponse,
     HealthResponse,
@@ -191,10 +192,12 @@ async def verify_label(
             FieldResult(
                 field_name=f.field_name,
                 status=VerificationStatus(f.status.value),
+                category=FieldCategory(f.category.value) if f.category else None,
                 extracted_value=f.extracted_value,
                 expected_value=f.expected_value,
                 confidence=f.confidence,
-                message=f.message + (f" {f.details}" if f.details else "")
+                message=f.message + (f" {f.details}" if f.details else ""),
+                guidance=f.guidance,
             )
             for f in verification_result.fields
         ]
@@ -203,7 +206,8 @@ async def verify_label(
             overall_status=VerificationStatus(verification_result.overall_status.value),
             fields=field_results,
             summary=verification_result.summary,
-            processing_time_ms=total_time
+            processing_time_ms=total_time,
+            issues=verification_result.issues,
         )
         
         # Add timing breakdown to result for debugging
@@ -475,10 +479,12 @@ async def verify_batch(
                 FieldResult(
                     field_name=f["field_name"],
                     status=VerificationStatus(f["status"]),
+                    category=FieldCategory(f["category"]) if f.get("category") else None,
                     extracted_value=f["extracted_value"],
                     expected_value=f["expected_value"],
                     confidence=f["confidence"],
-                    message=f["message"]
+                    message=f["message"],
+                    guidance=f.get("guidance"),
                 )
                 for f in result_data["fields"]
             ]
@@ -487,7 +493,8 @@ async def verify_batch(
                 overall_status=VerificationStatus(result_data["overall_status"]),
                 fields=field_results,
                 summary=result_data["summary"],
-                processing_time_ms=result_data["processing_time_ms"]
+                processing_time_ms=result_data["processing_time_ms"],
+                issues=result_data.get("issues", []),
             )
             
             batch_results.append(BatchRowResult(

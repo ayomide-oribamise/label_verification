@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # OCR settings
     ocr_lang: str = "en"
     
-    # EasyOCR enhancement settings (tuned for speed)
+    # OCR enhancement settings (tuned for speed)
     ocr_confidence_threshold: float = 0.30  # Lower threshold = fewer fallbacks
     ocr_min_token_count: int = 2  # Fewer tokens triggers fallback
     ocr_fallback_scale: float = 1.5  # Scale factor for fallback pass

@@ -1,6 +1,6 @@
 """Image preprocessing utilities for improving OCR accuracy.
 
-Enhanced for EasyOCR with:
+Enhanced for OCR with:
 - PNG to JPEG conversion (critical for OCR speed)
 - ROI detection (find label region)
 - Blur/quality detection
@@ -220,7 +220,7 @@ class ImagePreprocessor:
             gray = cv2.fastNlMeansDenoising(gray, None, h=h_param, templateWindowSize=7, searchWindowSize=21)
             metadata["preprocessing_steps"].append("denoise")
         
-        # Sharpen lightly (helps EasyOCR)
+        # Sharpen lightly (helps OCR)
         sharpened = self._sharpen(gray)
         metadata["preprocessing_steps"].append("sharpen")
         
@@ -235,7 +235,7 @@ class ImagePreprocessor:
             enhanced = clahe.apply(sharpened)
             metadata["preprocessing_steps"].append("clahe")
         
-        # Convert back to BGR for EasyOCR (it accepts both but BGR is standard)
+        # Convert back to BGR for OCR processing
         result = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
         
         return result, metadata

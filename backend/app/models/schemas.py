@@ -10,18 +10,29 @@ class VerificationStatus(str, Enum):
     MATCH = "match"
     REVIEW = "review"
     MISMATCH = "mismatch"
-    NOT_FOUND = "not_found"
+    INCOMPLETE = "incomplete"
+    NOT_VISIBLE = "not_visible_on_label"
+    LOW_CONFIDENCE = "low_confidence"
+    NOT_FOUND = "not_found"  # Legacy alias; new responses use not_visible_on_label.
     NOT_APPLICABLE = "not_applicable"
+
+
+class FieldCategory(str, Enum):
+    """Whether absence from the uploaded image is a compliance failure."""
+    REQUIRED_ON_PRIMARY = "required_on_primary"
+    REQUIRED_ANYWHERE = "required_anywhere"
 
 
 class FieldResult(BaseModel):
     """Result for a single field verification."""
     field_name: str
     status: VerificationStatus
+    category: Optional[FieldCategory] = None
     extracted_value: Optional[str] = None
     expected_value: Optional[str] = None
     confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     message: str
+    guidance: Optional[str] = None
     
     class Config:
         json_schema_extra = {
@@ -42,6 +53,7 @@ class VerificationResult(BaseModel):
     fields: list[FieldResult]
     summary: str
     processing_time_ms: int
+    issues: list[str] = Field(default_factory=list)
     
     class Config:
         json_schema_extra = {
