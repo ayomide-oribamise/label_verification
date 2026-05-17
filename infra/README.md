@@ -13,7 +13,7 @@ Terraform configurations for deploying the Label Verification application to Azu
 │  │  Static Web App     │       │  Container Apps Environment      │ │
 │  │  (Frontend)         │       │                                  │ │
 │  │  React/Vite SPA     │──────▶│  Container App (API)             │ │
-│  │                     │ HTTPS │  - FastAPI + EasyOCR             │ │
+│  │                     │ HTTPS │  - FastAPI + PaddleOCR           │ │
 │  └─────────────────────┘       │  - 2 vCPU / 4Gi Memory           │ │
 │                                │  - Auto-scaling 1-3 replicas     │ │
 │                                │                                  │ │
@@ -49,11 +49,34 @@ infra/
 
 ## Deployment
 
-For a new Azure account, copy both example variable files first:
+For a new Azure account, create local `terraform.tfvars` files. These files are ignored by git because they can contain subscription and tenant IDs.
 
 ```bash
-cp infra/backend/terraform.tfvars.example infra/backend/terraform.tfvars
-cp infra/frontend/terraform.tfvars.example infra/frontend/terraform.tfvars
+cat > infra/backend/terraform.tfvars <<'EOF'
+project_name               = "labelverify"
+environment                = "dev"
+location                   = "eastus"
+subscription_id            = "00000000-0000-0000-0000-000000000000"
+tenant_id                  = "00000000-0000-0000-0000-000000000000"
+name_suffix                = "a1"
+container_image_tag        = "latest"
+container_cpu              = 2.0
+container_memory           = "4Gi"
+min_replicas               = 1
+max_replicas               = 3
+skip_provider_registration = false
+EOF
+
+cat > infra/frontend/terraform.tfvars <<'EOF'
+project_name               = "labelverify"
+environment                = "dev"
+location                   = "eastus2"
+subscription_id            = "00000000-0000-0000-0000-000000000000"
+tenant_id                  = "00000000-0000-0000-0000-000000000000"
+name_suffix                = "a1"
+sku_tier                   = "Free"
+skip_provider_registration = false
+EOF
 ```
 
 Edit both files and set:
@@ -163,7 +186,7 @@ Important: `VITE_API_URL` is a Vite build-time variable. Set it when running `np
 | `container_memory` | 4Gi | Memory (max 4Gi for Consumption tier) |
 | `min_replicas` | 1 | Minimum replicas |
 | `max_replicas` | 3 | Maximum replicas |
-| `skip_provider_registration` | false | Set true only when Azure provider registration is managed externally |
+| `skip_provider_registration` | true | Set false for a normal new subscription where Terraform can register providers |
 
 ### Frontend Variables
 
@@ -177,14 +200,14 @@ Important: `VITE_API_URL` is a Vite build-time variable. Set it when running `np
 | `name_suffix` | blank | Optional suffix for globally unique resource names |
 | `resource_group_name` | blank | Optional exact frontend resource group name |
 | `sku_tier` | Free | SKU tier (Free/Standard) |
-| `skip_provider_registration` | false | Set true only when Azure provider registration is managed externally |
+| `skip_provider_registration` | true | Set false for a normal new subscription where Terraform can register providers |
 
 ## Resource Limits
 
 Azure Container Apps Consumption tier limits:
 - **Max CPU**: 2.0 vCPU per container
 - **Max Memory**: 4Gi per container
-- **OCR Processing**: ~8-12 seconds per image at 2 vCPU
+- **OCR Processing**: target is under 5 seconds per image after model warmup
 
 For faster processing, use a Dedicated workload profile (4+ vCPU).
 
