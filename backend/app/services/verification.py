@@ -58,6 +58,8 @@ class VerificationService:
         expected_class_type: Optional[str] = None,
         expected_abv: Optional[float] = None,
         expected_net_contents: Optional[float] = None,
+        expected_bottler_producer: Optional[str] = None,
+        expected_country_of_origin: Optional[str] = None,
         expected_has_warning: bool = True,
     ) -> VerificationResult:
         """
@@ -69,6 +71,8 @@ class VerificationService:
             expected_class_type: Expected class/type (optional)
             expected_abv: Expected ABV percentage (optional)
             expected_net_contents: Expected net contents in mL (optional)
+            expected_bottler_producer: Expected bottler/producer name and address (optional)
+            expected_country_of_origin: Expected country of origin for imports (optional)
             expected_has_warning: Whether warning should be present
             
         Returns:
@@ -106,6 +110,28 @@ class VerificationService:
                 expected_net_contents
             )
             fields.append(net_result)
+
+        # Verify bottler/producer name and address (optional)
+        if expected_bottler_producer:
+            bottler_result = self._verify_text_field(
+                field_name="Bottler/Producer",
+                extracted=extraction.bottler_producer,
+                expected=expected_bottler_producer,
+                not_found_message="Bottler/producer statement not detected on label",
+            )
+            fields.append(bottler_result)
+
+        # Verify country of origin for imports (optional)
+        if expected_country_of_origin:
+            country_result = self._verify_text_field(
+                field_name="Country of Origin",
+                extracted=extraction.country_of_origin,
+                expected=expected_country_of_origin,
+                not_found_message="Country of origin not detected on label",
+                match_threshold=0.90,
+                review_threshold=0.75,
+            )
+            fields.append(country_result)
         
         # Verify government warning
         warning_result = self._verify_warning(
@@ -803,6 +829,62 @@ class VerificationService:
                 details=f"Label shows {extracted_value} mL but application states {expected} mL."
             )
     
+    def _verify_text_field(
+        self,
+        field_name: str,
+        extracted: ExtractedField,
+        expected: str,
+        not_found_message: str,
+        match_threshold: float = 0.85,
+        review_threshold: float = 0.65,
+    ) -> FieldVerification:
+        """Verify optional text fields with fuzzy matching."""
+        if not extracted.value:
+            return FieldVerification(
+                field_name=field_name,
+                status=VerificationStatus.NOT_FOUND,
+                extracted_value=None,
+                expected_value=expected,
+                confidence=0.0,
+                message=not_found_message,
+                details="Manual review required."
+            )
+
+        extracted_norm = self._normalize_text(extracted.value)
+        expected_norm = self._normalize_text(expected)
+        score = fuzz.token_set_ratio(extracted_norm, expected_norm) / 100.0
+
+        if score >= match_threshold:
+            return FieldVerification(
+                field_name=field_name,
+                status=VerificationStatus.MATCH,
+                extracted_value=extracted.value,
+                expected_value=expected,
+                confidence=score,
+                message=f"{field_name} matches",
+                details=f"Similarity score: {score:.0%}" if score < 1.0 else None
+            )
+        if score >= review_threshold:
+            return FieldVerification(
+                field_name=field_name,
+                status=VerificationStatus.REVIEW,
+                extracted_value=extracted.value,
+                expected_value=expected,
+                confidence=score,
+                message=f"{field_name} likely matches - review recommended",
+                details=f"Label shows '{extracted.value}'. Expected '{expected}'. Similarity: {score:.0%}."
+            )
+
+        return FieldVerification(
+            field_name=field_name,
+            status=VerificationStatus.MISMATCH,
+            extracted_value=extracted.value,
+            expected_value=expected,
+            confidence=score,
+            message=f"{field_name} does not match",
+            details=f"Label shows '{extracted.value}' but application states '{expected}'. Similarity: {score:.0%}."
+        )
+
     def _verify_warning(
         self,
         extracted: ExtractedField,

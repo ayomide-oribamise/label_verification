@@ -22,6 +22,8 @@ class CSVRow:
     class_type: Optional[str] = None
     abv_percent: Optional[float] = None
     net_contents_ml: Optional[float] = None
+    bottler_producer: Optional[str] = None
+    country_of_origin: Optional[str] = None
     has_warning: bool = True
     row_number: int = 0
     
@@ -33,6 +35,8 @@ class CSVRow:
             "class_type": self.class_type,
             "abv_percent": self.abv_percent,
             "net_contents_ml": self.net_contents_ml,
+            "bottler_producer": self.bottler_producer,
+            "country_of_origin": self.country_of_origin,
             "has_warning": self.has_warning,
         }
 
@@ -56,6 +60,8 @@ class CSVParser:
         "class_type": str,
         "abv_percent": float,
         "net_contents_ml": float,
+        "bottler_producer": str,
+        "country_of_origin": str,
         "has_warning": bool,
     }
     
@@ -131,6 +137,8 @@ class CSVParser:
                 
                 # Parse optional fields
                 class_type = (normalized_row.get("class_type") or "").strip() or None
+                bottler_producer = (normalized_row.get("bottler_producer") or "").strip() or None
+                country_of_origin = (normalized_row.get("country_of_origin") or "").strip() or None
                 
                 abv_percent = None
                 abv_str = (normalized_row.get("abv_percent") or "").strip()
@@ -195,6 +203,8 @@ class CSVParser:
                         class_type=class_type,
                         abv_percent=abv_percent,
                         net_contents_ml=net_contents_ml,
+                        bottler_producer=bottler_producer,
+                        country_of_origin=country_of_origin,
                         has_warning=has_warning,
                         row_number=row_num
                     ))
@@ -316,6 +326,8 @@ def _process_single_label(args: Tuple) -> Dict[str, Any]:
             expected_class_type=row_data.get("class_type"),
             expected_abv=row_data.get("abv_percent"),
             expected_net_contents=row_data.get("net_contents_ml"),
+            expected_bottler_producer=row_data.get("bottler_producer"),
+            expected_country_of_origin=row_data.get("country_of_origin"),
             expected_has_warning=row_data.get("has_warning", True),
         )
         
@@ -546,6 +558,8 @@ class SequentialBatchProcessor:
                     expected_class_type=row.class_type,
                     expected_abv=row.abv_percent,
                     expected_net_contents=row.net_contents_ml,
+                    expected_bottler_producer=row.bottler_producer,
+                    expected_country_of_origin=row.country_of_origin,
                     expected_has_warning=row.has_warning,
                 )
                 

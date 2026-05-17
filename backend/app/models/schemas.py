@@ -11,6 +11,7 @@ class VerificationStatus(str, Enum):
     REVIEW = "review"
     MISMATCH = "mismatch"
     NOT_FOUND = "not_found"
+    NOT_APPLICABLE = "not_applicable"
 
 
 class FieldResult(BaseModel):
@@ -59,6 +60,8 @@ class ExtractedFields(BaseModel):
     class_type: Optional[str] = None
     abv_percent: Optional[float] = None
     net_contents_ml: Optional[float] = None
+    bottler_producer: Optional[str] = None
+    country_of_origin: Optional[str] = None
     government_warning: Optional[str] = None
     raw_text: str
     ocr_confidence: float = Field(ge=0.0, le=1.0)
@@ -70,6 +73,8 @@ class ApplicationData(BaseModel):
     class_type: Optional[str] = Field(None, description="Expected class/type (e.g., Kentucky Straight Bourbon)")
     abv_percent: Optional[float] = Field(None, ge=0, le=100, description="Expected ABV percentage")
     net_contents_ml: Optional[float] = Field(None, gt=0, description="Expected net contents in mL")
+    bottler_producer: Optional[str] = Field(None, description="Expected bottler/producer name and address")
+    country_of_origin: Optional[str] = Field(None, description="Expected country of origin for imports")
     has_warning: bool = Field(True, description="Whether label should have government warning")
     
     class Config:
@@ -79,6 +84,8 @@ class ApplicationData(BaseModel):
                 "class_type": "Kentucky Straight Bourbon Whiskey",
                 "abv_percent": 45.0,
                 "net_contents_ml": 750,
+                "bottler_producer": "Bottled by Old Tom Distillery, Louisville, KY",
+                "country_of_origin": None,
                 "has_warning": True
             }
         }
