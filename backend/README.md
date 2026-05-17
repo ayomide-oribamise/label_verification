@@ -121,7 +121,7 @@ Results (match/review/incomplete/mismatch per field)
 
 ### Key Design Decisions
 
-1. **Offline-First OCR**: Uses PaddleOCR 2.7.x for offline processing without cloud API dependencies. Versions are pinned to the pre-PIR PaddlePaddle runtime for CPU/AMD64 stability.
+1. **Offline-First OCR**: Uses PaddleOCR for offline processing without cloud API dependencies. Runtime versions are pinned for CPU/AMD64 stability.
 
 2. **Detect-Once Architecture**: Single OCR pass on full image, then slice detected text boxes by position for field extraction
 

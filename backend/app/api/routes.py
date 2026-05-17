@@ -210,15 +210,6 @@ async def verify_label(
             issues=verification_result.issues,
         )
         
-        # Add timing breakdown to result for debugging
-        result_dict = result.model_dump() if hasattr(result, 'model_dump') else result.dict()
-        result_dict['timing'] = {
-            'preprocess_ms': preprocess_ms,
-            'ocr_ms': ocr_ms,
-            'extract_ms': extract_ms,
-            'verify_ms': verify_ms
-        }
-        
         return VerificationResponse(
             success=True,
             result=result,

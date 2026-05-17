@@ -16,8 +16,6 @@ class PaddleOCRBackend:
     def __init__(self):
         from paddleocr import PaddleOCR
 
-        # Model initialization is intentionally done once. In Docker, the model
-        # cache is pre-populated during image build to avoid runtime downloads.
         self._ocr = PaddleOCR(
             use_angle_cls=True,
             lang="en",
@@ -26,7 +24,6 @@ class PaddleOCRBackend:
             det_model_dir=None,
             rec_model_dir=None,
             cls_model_dir=None,
-            # Lower threshold helps low-contrast metallic text such as foil.
             det_db_box_thresh=0.3,
             det_db_unclip_ratio=2.0,
         )
