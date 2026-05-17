@@ -1,6 +1,5 @@
 # Terraform local files
 .terraform/
-.terraform.lock.hcl
 
 # State files (don't commit state to git)
 *.tfstate
