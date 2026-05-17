@@ -4,7 +4,6 @@ import axios from 'axios'
 import LoadingSpinner from './LoadingSpinner'
 import BatchResults from './BatchResults'
 
-// Import sample images
 import sampleBourbon from '../assets/sample_bourbon.png'
 import sampleBeer from '../assets/sample_beer.png'
 import sampleWine from '../assets/sample_wine.png'
@@ -75,20 +74,16 @@ const parseCSVLine = (line) => {
   return values
 }
 
-// Helper: find best matching CSV row for an image filename
 const findMatchingCsvRow = (imageName, csvRows, imageIndex = -1) => {
   if (!csvRows || csvRows.length === 0) return null
   
-  // 1. Exact match
   const exact = csvRows.find(row => row.filename === imageName)
   if (exact) return exact
   
-  // 2. Case-insensitive match
   const lowerName = imageName.toLowerCase()
   const caseInsensitive = csvRows.find(row => row.filename?.toLowerCase() === lowerName)
   if (caseInsensitive) return caseInsensitive
   
-  // 3. Partial match (CSV filename contained in image name or vice versa)
   const partial = csvRows.find(row => {
     if (!row.filename) return false
     const csvLower = row.filename.toLowerCase()
@@ -96,7 +91,6 @@ const findMatchingCsvRow = (imageName, csvRows, imageIndex = -1) => {
   })
   if (partial) return partial
   
-  // 4. Match by row order (if same number of rows)
   if (imageIndex >= 0 && imageIndex < csvRows.length) {
     return csvRows[imageIndex]
   }
@@ -104,7 +98,6 @@ const findMatchingCsvRow = (imageName, csvRows, imageIndex = -1) => {
   return null
 }
 
-// Sample batch data with images for quick testing
 const SAMPLE_LABELS = [
   {
     id: 'bourbon',
@@ -153,22 +146,20 @@ const SAMPLE_LABELS = [
   },
 ]
 
-// Legacy lookup for backward compatibility
-const SAMPLE_BATCH_DATA = Object.fromEntries(
+const SAMPLE_DATA_BY_FILENAME = Object.fromEntries(
   SAMPLE_LABELS.map(s => [s.filename, s.data])
 )
 
 function BatchVerification() {
   const [images, setImages] = useState([])
   const [csvFile, setCsvFile] = useState(null)
-  const [csvData, setCsvData] = useState(null) // Parsed CSV data
-  const [imageData, setImageData] = useState({}) // Editable data per image
+  const [csvData, setCsvData] = useState(null)
+  const [imageData, setImageData] = useState({})
   const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [progress, setProgress] = useState(0)
 
-  // Image dropzone
   const onDropImages = useCallback((acceptedFiles, rejectedFiles) => {
     if (rejectedFiles.length > 0) {
       setError('Some files were rejected. Only PNG, JPG, JPEG, WEBP images are allowed.')
@@ -184,15 +175,12 @@ function BatchVerification() {
 
     setImages(prev => [...prev, ...validFiles])
     setResults(null)
-    // Don't clear csvData - keep it for matching
     
-    // Initialize data for new images, using CSV data if available
     setImageData(prev => {
       const newData = { ...prev }
       const existingCount = Object.keys(prev).length
       validFiles.forEach((file, idx) => {
         if (!newData[file.name]) {
-          // Try to match with existing CSV data (use index for row-order matching)
           const csvMatch = findMatchingCsvRow(file.name, csvData, existingCount + idx)
           if (csvMatch) {
             newData[file.name] = applicationDataFromCsv(csvMatch)
@@ -214,7 +202,6 @@ function BatchVerification() {
     },
   })
 
-  // CSV dropzone and parsing
   const onDropCSV = useCallback((acceptedFiles) => {
     const file = acceptedFiles[0]
     if (file) {
@@ -222,7 +209,6 @@ function BatchVerification() {
       setError(null)
       setResults(null)
       
-      // Parse CSV
       const reader = new FileReader()
       reader.onload = (e) => {
         try {
@@ -230,11 +216,8 @@ function BatchVerification() {
           const parsed = parseCSV(text)
           setCsvData(parsed)
           
-          // Update imageData with CSV values using fuzzy matching
           const newImageData = { ...imageData }
           
-          // For each uploaded image, try to find matching CSV row
-          // Use index for row-order matching when names don't match
           images.forEach((img, index) => {
             const csvMatch = findMatchingCsvRow(img.name, parsed, index)
             if (csvMatch) {
@@ -242,7 +225,6 @@ function BatchVerification() {
             }
           })
           
-          // Also store CSV data keyed by original filename (for future image uploads)
           parsed.forEach(row => {
             if (row.filename && !newImageData[row.filename]) {
               newImageData[row.filename] = applicationDataFromCsv(row)
@@ -266,7 +248,6 @@ function BatchVerification() {
     maxFiles: 1,
   })
 
-  // Parse CSV string to array of objects
   const parseCSV = (text) => {
     const lines = text.trim().split(/\r?\n/)
     if (lines.length < 2) return []
@@ -309,7 +290,6 @@ function BatchVerification() {
       return
     }
 
-    // Check if all images have at least brand_name
     const missingData = images.filter(img => !imageData[img.name]?.brand_name)
     if (missingData.length > 0) {
       setError(`Missing brand name for: ${missingData.map(img => img.name).join(', ')}`)
@@ -321,7 +301,6 @@ function BatchVerification() {
     setResults(null)
     setProgress(0)
 
-    // Generate CSV from imageData
     const csvContent = generateCSV()
     const csvBlob = new Blob([csvContent], { type: 'text/csv' })
     const generatedCsvFile = new File([csvBlob], 'batch_data.csv', { type: 'text/csv' })
@@ -352,7 +331,6 @@ function BatchVerification() {
         setError(response.data.error || 'Batch verification failed.')
       }
     } catch (err) {
-      console.error('Batch verification error:', err)
       if (err.code === 'ECONNABORTED') {
         setError('Request timed out. The batch may be too large.')
       } else if (err.response?.data?.detail) {
@@ -409,10 +387,10 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
   }
 
   const loadSampleData = (filename) => {
-    if (SAMPLE_BATCH_DATA[filename]) {
+    if (SAMPLE_DATA_BY_FILENAME[filename]) {
       setImageData(prev => ({
         ...prev,
-        [filename]: { ...SAMPLE_BATCH_DATA[filename] }
+        [filename]: { ...SAMPLE_DATA_BY_FILENAME[filename] }
       }))
     }
   }
@@ -426,14 +404,12 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
     setError(null)
   }
 
-  // Load all sample labels for quick batch testing
   const loadAllSamples = async () => {
     try {
       const sampleFiles = []
       const sampleData = {}
       
       for (const sample of SAMPLE_LABELS) {
-        // Fetch the image and convert to File object
         const response = await fetch(sample.image)
         const blob = await response.blob()
         const file = new File([blob], sample.filename, { type: 'image/png' })
@@ -445,8 +421,7 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
       setImageData(sampleData)
       setResults(null)
       setError(null)
-    } catch (err) {
-      console.error('Failed to load sample images:', err)
+    } catch {
       setError('Failed to load sample images. Please try again.')
     }
   }
@@ -460,9 +435,8 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
         <p>Upload multiple label images and provide application data for each.</p>
       </div>
 
-      {/* Quick Test Section */}
       <div className="quick-test-section">
-        <h3>🚀 Check batch throughput against the 5-second target</h3>
+        <h3>Check batch throughput against the under-5-second target</h3>
         <p>Load the sample labels with pre-filled data, then review per-label processing time in the results.</p>
         <div className="sample-cards">
           {SAMPLE_LABELS.map(sample => (
@@ -489,7 +463,6 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
         <span>or upload your own</span>
       </div>
 
-      {/* Step 1: Upload Images */}
       <div className="batch-section">
         <h3>Step 1: Upload Label Images</h3>
         <div
@@ -506,7 +479,6 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
         </div>
       </div>
 
-      {/* Step 2: Provide Data - shows after images uploaded */}
       {images.length > 0 && (
         <div className="batch-section">
           <h3>Step 2: Provide Application Data</h3>
@@ -547,7 +519,6 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
             </div>
           </div>
 
-          {/* Image-by-image data entry */}
           <div className="image-data-table">
             <table className="data-entry-table">
               <thead>
@@ -569,7 +540,7 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
                       <span className="image-filename" title={img.name}>
                         {img.name.length > 20 ? img.name.slice(0, 17) + '...' : img.name}
                       </span>
-                      {SAMPLE_BATCH_DATA[img.name] && (
+                      {SAMPLE_DATA_BY_FILENAME[img.name] && (
                         <button 
                           className="btn-mini btn-sample-load"
                           onClick={() => loadSampleData(img.name)}
@@ -609,6 +580,15 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
                     </td>
                     <td>
                       <input
+                        type="number"
+                        value={imageData[img.name]?.net_contents_ml || ''}
+                        onChange={(e) => updateImageData(img.name, 'net_contents_ml', e.target.value)}
+                        placeholder="e.g., 750"
+                        className="table-input table-input-small"
+                      />
+                    </td>
+                    <td>
+                      <input
                         type="text"
                         value={imageData[img.name]?.bottler_producer || ''}
                         onChange={(e) => updateImageData(img.name, 'bottler_producer', e.target.value)}
@@ -621,15 +601,6 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
                         onChange={(e) => updateImageData(img.name, 'country_of_origin', e.target.value)}
                         placeholder="Import origin"
                         className="table-input table-input-stacked"
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        value={imageData[img.name]?.net_contents_ml || ''}
-                        onChange={(e) => updateImageData(img.name, 'net_contents_ml', e.target.value)}
-                        placeholder="e.g., 750"
-                        className="table-input table-input-small"
                       />
                     </td>
                     <td>
@@ -655,7 +626,6 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
             </table>
           </div>
 
-          {/* Status indicator */}
           <div className="data-status">
             {allImagesHaveData ? (
               <span className="status-ready">✓ All images have required data</span>
@@ -668,7 +638,6 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
         </div>
       )}
 
-      {/* Error display */}
       {error && (
         <div className="error-banner" role="alert">
           <span className="error-icon">⚠️</span>
@@ -677,7 +646,6 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
         </div>
       )}
 
-      {/* Progress bar */}
       {loading && progress > 0 && (
         <div className="progress-container">
           <div className="progress-bar">
@@ -687,7 +655,6 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
         </div>
       )}
 
-      {/* Action buttons */}
       <div className="action-buttons">
         <button
           className="btn btn-primary btn-large"
@@ -705,7 +672,6 @@ label_02.png,ANOTHER BRAND,Another Type,40,1000,"Imported by Example Imports, Ci
         </button>
       </div>
 
-      {/* Results */}
       {results && <BatchResults results={results} />}
     </div>
   )
